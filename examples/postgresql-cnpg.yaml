@@ -1,0 +1,17 @@
+# PostgreSQL managed by CloudNativePG: 1 primary + 2 replicas with automated
+# failover. The operator must be installed first; see the README.
+database:
+  type: postgresql
+  mode: operator
+
+postgresql:
+  operator:
+    instances: 3
+    storage:
+      size: 10Gi
+
+replicaCount: 2
+persistence:
+  attachments:
+    accessModes: [ReadWriteMany]
+    storageClass: ocs-storagecluster-cephfs

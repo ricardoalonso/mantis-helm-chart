@@ -1,0 +1,95 @@
+# In the MantisBT namespace: scheduled non-admin backups. OADP 1.6 has no
+# non-admin Schedule, so a CronJob creates a NonAdminBackup every night and
+# deletes, with their data, all but the newest KEEP.
+#
+#   oc apply -n <namespace> -f 03-backup-schedule.yaml
+#
+# Schedule it after the database operator's backup, so every attachment the
+# database references is in the backup.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mantis-oadp-backup
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mantis-oadp-backup
+rules:
+  - apiGroups: [oadp.openshift.io]
+    resources: [nonadminbackups]
+    verbs: [get, list, create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mantis-oadp-backup
+subjects:
+  - kind: ServiceAccount
+    name: mantis-oadp-backup
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mantis-oadp-backup
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mantis-oadp-backup
+spec:
+  schedule: "30 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: mantis-oadp-backup
+          restartPolicy: Never
+          containers:
+            - name: backup
+              # The cluster's own oc image, on OpenShift and OKD alike.
+              image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+              env:
+                - name: KEEP
+                  value: "14"
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  oc create -f - <<'EOF'
+                  apiVersion: oadp.openshift.io/v1alpha1
+                  kind: NonAdminBackup
+                  metadata:
+                    generateName: mantis-scheduled-
+                    labels:
+                      app.kubernetes.io/managed-by: mantis-oadp-backup
+                  spec:
+                    backupSpec:
+                      storageLocation: mantis
+                      snapshotMoveData: true
+                      # A safety net; the rotation below normally comes first.
+                      ttl: 1440h
+                  EOF
+                  # Oldest first; everything except the newest $KEEP.
+                  oc get nonadminbackup -l app.kubernetes.io/managed-by=mantis-oadp-backup \
+                      --sort-by=.metadata.creationTimestamp -o name \
+                    | head -n -"$KEEP" \
+                    | while read -r nab; do
+                        oc patch "$nab" --type merge -p '{"spec":{"deleteBackup":true}}'
+                      done
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop: [ALL]
+                seccompProfile:
+                  type: RuntimeDefault
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi

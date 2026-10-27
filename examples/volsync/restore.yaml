@@ -1,0 +1,31 @@
+# Restores the attachments PVC from the restic repository, in place. Stop
+# MantisBT first so nothing writes during the restore:
+#
+#   oc scale deploy/mantis --replicas=0
+#   oc create -f examples/volsync/restore.yaml
+#   oc get replicationdestination mantis-attachments-restore -w   # until
+#     # status.latestMoverStatus.result is Successful
+#   oc delete replicationdestination mantis-attachments-restore
+#   helm upgrade mantis ... (or oc scale back up)
+#
+# For a single file, use the restic CLI against the same repository instead:
+#   restic snapshots
+#   restic ls latest | grep <file>
+#   restic restore latest --include <path from ls> --target .
+apiVersion: volsync.backube/v1alpha1
+kind: ReplicationDestination
+metadata:
+  name: mantis-attachments-restore
+spec:
+  trigger:
+    manual: restore-1
+  restic:
+    repository: mantis-attachments-restic
+    destinationPVC: mantis-attachments
+    copyMethod: Direct
+    # Removes files that are not in the backup; without it, restored files are
+    # added next to the current ones.
+    enableFileDeletion: true
+    # The newest backup taken at or before this time. Leave it out for the
+    # latest one.
+    # restoreAsOf: "2026-09-30T12:00:00Z"

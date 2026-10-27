@@ -1,0 +1,19 @@
+# In the MantisBT namespace: restore a backup. Velero does not overwrite
+# resources that already exist, and a non-admin restore can only go back into
+# the same namespace, so empty it first: `helm uninstall`, then delete what the
+# chart leaves behind (see "Uninstalling" in the chart README).
+#
+#   oc get nonadminbackup -n <namespace>          # pick one
+#   oc create -n <namespace> -f 04-restore.yaml
+#   oc get nonadminrestore -n <namespace> -w
+#
+# The Helm release comes back with everything else, since Helm keeps its state
+# in Secrets in the same namespace.
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminRestore
+metadata:
+  generateName: mantis-
+spec:
+  restoreSpec:
+    # The NonAdminBackup's name.
+    backupName: mantis-CHANGE_ME

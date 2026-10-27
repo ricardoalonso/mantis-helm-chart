@@ -1,0 +1,74 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: helm lint
+        run: helm lint charts/mantis
+      - name: render every database combination
+        run: |
+          for t in mariadb postgresql; do
+            for m in standalone operator external; do
+              helm template t charts/mantis \
+                --set database.type=$t,database.mode=$m \
+                --set database.external.host=db.example.com \
+                --set database.skipOperatorCheck=true > /dev/null
+              echo "ok $t/$m"
+            done
+          done
+      - name: render the examples
+        run: |
+          for f in examples/*.yaml; do
+            helm template t charts/mantis -f "$f" --set database.skipOperatorCheck=true > /dev/null
+            echo "ok $f"
+          done
+          helm template t charts/mantis -f examples/mariadb-galera.yaml -f examples/volsync/values.yaml \
+            --set database.skipOperatorCheck=true \
+            --api-versions volsync.backube/v1alpha1/ReplicationSource > /dev/null
+          echo "ok examples/volsync/values.yaml"
+      - name: render with single sign-on, LDAP, plugins and drop-ins
+        run: |
+          helm template t charts/mantis --set database.skipOperatorCheck=true \
+            --set mantis.contextPath=/ \
+            --set mantis.oidc.enabled=true,mantis.oidc.issuer=https://sso.example.com/realms/mantis \
+            --set mantis.oidc.clientId=mantis,mantis.oidc.clientSecret=secret \
+            --set mantis.ldap.enabled=true,mantis.ldap.server=ldaps://ldap.example.com \
+            --set 'mantis.plugins.archives[0].url=https://example.com/Snippets.zip' \
+            --set 'mantis.plugins.archives[0].sha256=661b11003d82715bfc9a7948f2e6bf06249007038d36315f95833c705f362d77' \
+            --set 'mantis.php.ini.session\.gc_maxlifetime=7200' \
+            --set 'mantis.confd.httpd.limits\.conf=LimitRequestBody 104857600' \
+            --set 'mantis.hooks.10-hello\.sh=echo hello' \
+            --set mantis.httpd.https.enabled=true > /dev/null
+          echo "ok full"
+      - name: render the TLS options
+        run: |
+          helm template t charts/mantis --set database.skipOperatorCheck=true \
+            --api-versions cert-manager.io/v1/Certificate \
+            --set route.host=mantis.example.com,certManager.enabled=true \
+            --set certManager.issuerRef.name=letsencrypt-prod > /dev/null
+          helm template t charts/mantis --set database.skipOperatorCheck=true \
+            --api-versions cert-manager.io/v1/Certificate \
+            --set route.enabled=false,ingress.enabled=true,ingress.host=mantis.example.com \
+            --set certManager.enabled=true,certManager.issuerRef.name=letsencrypt-prod > /dev/null
+          helm template t charts/mantis --set database.skipOperatorCheck=true \
+            --set route.host=mantis.example.com,route.tlsSecret=mantis-tls > /dev/null
+          echo "ok tls"
+      - name: render the NetworkPolicies
+        run: |
+          for t in mariadb postgresql; do
+            for m in standalone operator external; do
+              helm template t charts/mantis \
+                --set database.type=$t,database.mode=$m \
+                --set database.external.host=db.example.com \
+                --set database.skipOperatorCheck=true \
+                --set networkPolicy.enabled=true > /dev/null
+              echo "ok $t/$m"
+            done
+          done

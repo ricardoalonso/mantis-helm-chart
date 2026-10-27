@@ -1,0 +1,30 @@
+apiVersion: v2
+name: mantis
+description: >-
+  MantisBT bug tracker on Apache + PHP-FPM, backed by MariaDB or PostgreSQL,
+  deployed either as a single database pod or as a highly available cluster
+  managed by mariadb-operator (Galera) or CloudNativePG.
+type: application
+# Chart version. Bump on every change to the chart.
+version: 0.2.0
+# MantisBT version; also the default image tag.
+appVersion: "2.28.4"
+kubeVersion: ">=1.25.0-0"
+home: https://www.mantisbt.org/
+icon: https://www.mantisbt.org/images/mantis_logo.png
+sources:
+  - https://github.com/mantisbt/mantisbt
+  - https://github.com/ricardoalonso/mantis-container
+keywords:
+  - mantis
+  - mantisbt
+  - bugtracker
+  - issue-tracker
+  - mariadb
+  - galera
+  - postgresql
+  - cloudnative-pg
+  - openid-connect
+maintainers:
+  - name: Ricardo Alonso
+    email: ricardoalonsos@gmail.com

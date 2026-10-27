@@ -1,0 +1,717 @@
+# Default values for the mantis chart.
+#
+# The one decision to make up front is the database, under `database:`:
+#
+#   type: mariadb | postgresql
+#   mode: standalone   one database pod (StatefulSet), no operator needed
+#         operator     an HA cluster managed by an operator:
+#                        mariadb    -> mariadb-operator, 3-node Galera
+#                        postgresql -> CloudNativePG, 1 primary + 2 replicas
+#         external     a database you run yourself; set database.external.*
+#
+# See examples/ in the repository for a ready-made values file per combination.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: quay.io/ricardoalonsos/mantis
+  # Defaults to the chart's appVersion.
+  tag: ""
+  # Setting a digest pins the image and takes precedence over the tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# More than one replica needs ReadWriteMany attachment storage; see
+# persistence.attachments below.
+replicaCount: 2
+
+# -----------------------------------------------------------------------------
+# MantisBT
+# -----------------------------------------------------------------------------
+mantis:
+  # URL path MantisBT is served at. "/mantis" keeps the URLs of earlier chart
+  # versions working; "/" serves it at the root of the host. With anything but
+  # "/", requests to / redirect to it.
+  contextPath: /mantis
+
+  # Public URL, e.g. https://mantis.example.com/mantis/ (trailing slash). When
+  # empty it is derived from route.host or ingress.host and contextPath;
+  # otherwise MantisBT works it out per request.
+  url: ""
+
+  # Timezone identifier, e.g. America/Sao_Paulo. Used by MantisBT and PHP.
+  timezone: UTC
+
+  # Exposes <contextPath>/admin/. The schema is installed and upgraded by the
+  # schema Job, so the web installer is not needed; leave this off unless you
+  # need the admin tools (check, move attachments, ...).
+  administration:
+    enabled: false
+
+  # Password for the built-in "administrator" account, set on first install
+  # only. Generated when empty; read it back with the command in NOTES.txt.
+  adminPassword: ""
+
+  # Salt for MantisBT's cryptographic features. Generated when empty and kept
+  # across upgrades. Changing it invalidates existing sessions and tokens.
+  cryptoMasterSalt: ""
+
+  # Use a Secret you manage instead of the chart's generated one. It must
+  # contain the keys `admin-password` and `crypto-master-salt`, plus
+  # `smtp-password` if email.smtp.auth is on, `ldap-bind-password` if
+  # ldap.enabled and ldap.bindDn are set, and `oidc-crypto-passphrase`
+  # (at least 32 characters) if oidc.enabled is on.
+  existingSecret: ""
+
+  attachments:
+    # Subdirectory layout for stored attachments (patched feature of the
+    # image; see the mantis-container README). depth 0 stores them flat.
+    subdirectoryDepth: 1
+    subdirectoryWidth: 2
+    # Largest attachment MantisBT accepts, in bytes. Keep it at or below
+    # php.uploadMaxFilesize.
+    maxFileSize: 4194304
+
+  email:
+    # MantisBT sends notifications by email. Off by default because nothing
+    # works until SMTP is configured.
+    enabled: false
+    webmaster: ""
+    from: ""
+    fromName: Mantis Bug Tracker
+    returnPath: ""
+    smtp:
+      host: ""
+      port: 587
+      # "", "tls" (STARTTLS) or "ssl"
+      connectionMode: tls
+      auth: false
+      username: ""
+      # Stored in the chart's Secret. With mantis.existingSecret, put it there
+      # under `smtp-password` instead.
+      password: ""
+
+  # Login against LDAP or Active Directory.
+  ldap:
+    enabled: false
+    # e.g. ldap://ldap.example.com or ldaps://ldap.example.com
+    server: ""
+    # Search base, e.g. dc=example,dc=com
+    rootDn: ""
+    # Optional extra search filter, e.g.
+    # (memberOf=cn=mantis,ou=groups,dc=example,dc=com)
+    organization: ""
+    # Account used to search; empty for an anonymous bind.
+    bindDn: ""
+    # Stored in the chart's Secret. With mantis.existingSecret, put it there
+    # under `ldap-bind-password` instead.
+    bindPassword: ""
+    # Login attribute. sAMAccountName for Active Directory.
+    uidField: uid
+    protocolVersion: 3
+    # STARTTLS on ldap://. Turn it off with ldaps://.
+    useStarttls: true
+    # Keep it off for Active Directory.
+    followReferrals: false
+    # Take users' email addresses / real names from LDAP.
+    useEmail: false
+    useRealname: false
+
+  # Single sign-on through an OpenID Connect identity provider (Keycloak,
+  # Entra ID, Okta, ...), handled by mod_auth_openidc in the image. At the
+  # identity provider, register a confidential client with:
+  #   redirect URI              <public URL>/oidc/callback
+  #   post-logout redirect URI  <public URL>/login_page.php
+  # where <public URL> includes contextPath. See README-authentication.md in
+  # the mantis-container repository.
+  oidc:
+    enabled: false
+    # Issuer URL; <issuer>/.well-known/openid-configuration must exist, e.g.
+    # https://sso.example.com/realms/mantis
+    issuer: ""
+    clientId: ""
+    # Stored in the chart's Secret. Must not contain ", \ or $.
+    clientSecret: ""
+    # Or read it from a Secret you manage, e.g. one synced by External Secrets.
+    existingSecret: ""
+    existingSecretKey: client-secret
+    # Claim that becomes the MantisBT username. Existing accounts with that
+    # username are reused; others are created on first login.
+    usernameClaim: preferred_username
+    # Must include openid.
+    scopes: openid email profile
+    # Break-glass accounts: they keep the password login at
+    # <public URL>/login_page.php?local=1 and are refused through single
+    # sign-on. An empty list means no exception.
+    localUsers:
+      - administrator
+    # Encrypts mod_auth_openidc's cookies; must be the same on every replica.
+    # Generated (64 characters) when empty and kept across upgrades.
+    cryptoPassphrase: ""
+
+  # MantisBT plugins. The image's own (MantisBT's bundled ones and OidcAuth)
+  # are always present. These are downloaded at pod start into an emptyDir
+  # per pod, so every pod needs to reach the URLs when it starts. Installing
+  # a plugin does not enable it: do that in Manage > Manage Plugins.
+  # Plugins are code with full access to MantisBT's data; pin them by checksum.
+  plugins:
+    # .tar.gz, .tgz or .zip archives; get the checksum with
+    #   curl -sL <url> | sha256sum
+    # - url: https://github.com/mantisbt-plugins/Snippets/archive/refs/tags/v2.6.0.zip
+    #   sha256: 661b11003d82715bfc9a7948f2e6bf06249007038d36315f95833c705f362d77
+    archives: []
+    # For URLs that carry a token: a Secret you manage whose key holds the
+    # list, one `<url>#sha256=<checksum>` per line. Replaces `archives`.
+    existingSecret: ""
+    existingSecretKey: plugins
+    # Size limit of the per-pod plugins emptyDir, e.g. 256Mi.
+    sizeLimit: ""
+
+  # PHP appended verbatim to the generated config_inc.php, after everything
+  # the chart sets, so it can override any of it. Use it for custom workflow,
+  # anything MantisBT supports.
+  #
+  # extraConfig: |
+  #   $g_window_title = 'ACME Bugs';
+  #   $g_allow_signup = OFF;
+  extraConfig: ""
+
+  # Additional files for the config folder, e.g. custom_strings_inc.php or
+  # custom_constants_inc.php. Key is the file name, value the content.
+  extraConfigFiles: {}
+
+  # Images served under /mantis/images/custom/, for a custom logo and favicon.
+  # The config folder is not served over HTTP, so they cannot go there. Point
+  # MantisBT at them from extraConfig:
+  #
+  #   $g_logo_image = 'images/custom/logo.jpg';
+  #   $g_favicon_image = 'images/custom/favicon.ico';
+  #
+  # Either name a ConfigMap you create, which handles binary files directly:
+  #   oc create configmap mantis-images --from-file=logo.jpg --from-file=favicon.ico
+  # or list the files here, base64-encoded (ConfigMaps are limited to 1 MiB):
+  #   helm upgrade ... --set-file mantis.customImages.files.logo\.jpg=<(base64 -w0 logo.jpg)
+  customImages:
+    existingConfigMap: ""
+    # File name -> base64 content.
+    files: {}
+
+  # PHP settings. An empty value means the image's default. Sizes use PHP's
+  # shorthand: 512K, 64M, 1G (not 64MB).
+  php:
+    # Largest single upload.
+    uploadMaxFilesize: 4M
+    # Largest request. Defaults to 4 x uploadMaxFilesize, since MantisBT sends
+    # every file attached to an issue in one request.
+    postMaxSize: ""
+    # Per PHP worker; see phpFpm.maxChildren.
+    memoryLimit: 256M
+    maxExecutionTime: 30
+    # Seconds to receive a request, uploads included. Image default: 60.
+    maxInputTime: ""
+    # Raise if very large forms lose data. Image default: 1000.
+    maxInputVars: ""
+    displayErrors: "Off"
+    # Image default: E_ALL & ~E_DEPRECATED
+    errorReporting: ""
+    # With On, edits to config take effect without a restart. The chart rolls
+    # the pods whenever the config changes, so Off is safe and a little faster.
+    opcacheValidateTimestamps: "Off"
+    # Any other php.ini setting, by its real name:
+    #   session.gc_maxlifetime: 7200
+    ini: {}
+
+  # PHP-FPM pool. An empty value means the image's default.
+  phpFpm:
+    # dynamic, static or ondemand
+    pm: dynamic
+    # Maximum PHP requests handled at once per pod. The worst case memory use
+    # is maxChildren x php.memoryLimit, which the image warns about at start
+    # if it exceeds resources.limits.memory: 6 x 256M = 1536Mi.
+    maxChildren: 6
+    # dynamic only. Derived from maxChildren when empty.
+    startServers: ""
+    minSpareServers: ""
+    maxSpareServers: ""
+    # ondemand only, e.g. 10s.
+    processIdleTimeout: ""
+    # Recycle a worker after this many requests (0: never). Image default: 500.
+    maxRequests: ""
+    # Wall-clock limit per request, in seconds. Defaults to
+    # php.maxExecutionTime. Keep it at or below httpd.requestTimeout.
+    requestTerminateTimeout: ""
+    # Any other pool setting, by its real name:
+    #   pm.status_listen: 127.0.0.1:9001
+    pool: {}
+
+  httpd:
+    # Defaults to route.host or ingress.host, else localhost.
+    serverName: ""
+    # Seconds. Also how long Apache waits for PHP.
+    requestTimeout: 60
+    # e.g. info, debug, "warn ssl:info"
+    logLevel: warn
+    # Proxies whose forwarded headers are trusted, so the access log and
+    # MantisBT see the real client address, and single sign-on builds its
+    # redirect URI from the public host. The defaults cover the pod network
+    # and host-network router pods on private addresses.
+    trustedProxies:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+    remoteIpHeader: X-Forwarded-For
+    # Who may see /server-status and /php-status: local, none, all, or a list
+    # of addresses / CIDR ranges (e.g. your monitoring pods). With local, the
+    # chart also matches the TCP peer rather than the forwarded address, so a
+    # pod in a trusted range cannot claim to be 127.0.0.1.
+    statusAllow: local
+    # TLS inside the pod on port 8443, for a reencrypt or passthrough Route.
+    # Not needed with the default edge Route.
+    https:
+      enabled: false
+      # A kubernetes.io/tls Secret (tls.crt with the intermediates, tls.key).
+      # When empty, each pod generates a self-signed certificate for
+      # serverName.
+      existingSecret: ""
+
+  # Configuration drop-ins, applied after everything else, so they override
+  # it. Key: file name, value: content.
+  confd:
+    # *.ini, copied to /etc/php.d/
+    php: {}
+    # *.conf, copied to /etc/php-fpm.d/. Start with [www] to change the pool.
+    phpFpm: {}
+    # *.conf, copied to /etc/httpd/conf.d/
+    httpd: {}
+    #   limits.conf: |
+    #     LimitRequestBody 104857600
+
+  # Startup hooks: bash scripts (*.sh) run in name order after the
+  # configuration is written and before the config test. A failing hook
+  # stops the pod.
+  hooks: {}
+
+# Installs the schema on first install and applies schema upgrades on every
+# upgrade (a Helm post-install/post-upgrade hook). It retries until the
+# database accepts connections, which for an operator cluster can take a few
+# minutes on first install.
+schemaJob:
+  enabled: true
+  backoffLimit: 20
+  activeDeadlineSeconds: 1800
+  # Keeps the finished Job (and its logs) for a day.
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+
+# -----------------------------------------------------------------------------
+# Database
+# -----------------------------------------------------------------------------
+database:
+  # mariadb | postgresql
+  type: mariadb
+  # standalone | operator | external
+  mode: standalone
+
+  name: mantis
+
+  auth:
+    username: mantis
+    # Generated when empty and kept across upgrades. Changing it after the
+    # first install does not change the password inside the database.
+    password: ""
+    # MariaDB root password (standalone and operator modes). Generated when
+    # empty.
+    rootPassword: ""
+    # Use a Secret you manage. Required for GitOps tools that render without
+    # cluster access (Argo CD), since generated values would change on every
+    # render. For postgresql/operator, CloudNativePG requires the keys to be
+    # exactly `username` and `password`.
+    existingSecret: ""
+    secretKeys:
+      username: username
+      password: password
+      rootPassword: root-password
+
+  external:
+    host: ""
+    # Defaults to 3306 for mariadb and 5432 for postgresql.
+    port: ""
+
+  # The operator CRDs are checked at render time so a missing operator fails
+  # with a clear message. `helm template` has no cluster to check against;
+  # pass --api-versions, or set this to true.
+  skipOperatorCheck: false
+
+mariadb:
+  standalone:
+    image:
+      repository: quay.io/sclorg/mariadb-1011-c9s
+      tag: latest
+      # Pinned for reproducibility. Bump deliberately:
+      #   skopeo inspect docker://quay.io/sclorg/mariadb-1011-c9s:latest --format '{{.Digest}}'
+      digest: sha256:0e5cd072d0a4ba6a4fd13b47c4dbffb7c475e2a2a83c20647241ae0709d0906c
+      pullPolicy: IfNotPresent
+    persistence:
+      size: 10Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    # Settings the image turns into my.cnf, e.g. MYSQL_INNODB_BUFFER_POOL_SIZE.
+    # https://github.com/sclorg/mariadb-container/tree/master/10.11
+    extraEnv: []
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  # mariadb-operator (https://github.com/mariadb-operator/mariadb-operator).
+  # The operator must already be installed; see the README.
+  operator:
+    # Galera needs an odd number of nodes to keep quorum: 3 or 5.
+    replicas: 3
+    # Pinned to the 11.8 LTS series (supported until 2028). The operator's own
+    # default is the newest rolling release and moves with operator upgrades.
+    # A tag rather than a digest: the operator reads the version from it.
+    # Upgrade within 11.8 freely; a major upgrade is a deliberate step.
+    image: docker.io/library/mariadb:11.8.9
+    storage:
+      size: 10Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+    myCnf: |
+      [mariadb]
+      bind-address=*
+      default_storage_engine=InnoDB
+      binlog_format=row
+      innodb_autoinc_lock_mode=2
+      innodb_buffer_pool_size=512M
+      max_allowed_packet=256M
+      character-set-server=utf8mb4
+      collation-server=utf8mb4_general_ci
+    # Merged into the MariaDB resource's spec, for anything not exposed above
+    # (backups, metrics, TLS, MaxScale, ...).
+    extraSpec: {}
+
+postgresql:
+  standalone:
+    image:
+      repository: quay.io/sclorg/postgresql-16-c9s
+      tag: latest
+      #   skopeo inspect docker://quay.io/sclorg/postgresql-16-c9s:latest --format '{{.Digest}}'
+      digest: sha256:b508e74304788fb4a5a2af76d8d013f20a18ee38bff3d24a705d7b730b8c0a30
+      pullPolicy: IfNotPresent
+    persistence:
+      size: 10Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    # e.g. POSTGRESQL_SHARED_BUFFERS, POSTGRESQL_MAX_CONNECTIONS.
+    # https://github.com/sclorg/postgresql-container/tree/master/16
+    extraEnv: []
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  # CloudNativePG (https://cloudnative-pg.io). The operator must already be
+  # installed; see the README.
+  operator:
+    # 1 primary + (instances - 1) streaming replicas with automated failover.
+    instances: 3
+    # Leave empty for the operator's default PostgreSQL image.
+    imageName: ""
+    storage:
+      size: 10Gi
+      storageClass: ""
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    # postgresql.conf parameters.
+    parameters: {}
+    # Merged into the Cluster resource's spec, for anything not exposed above
+    # (backups, monitoring, TLS, ...).
+    extraSpec: {}
+
+# -----------------------------------------------------------------------------
+# Storage
+# -----------------------------------------------------------------------------
+persistence:
+  attachments:
+    # Without persistence, attachments live in an emptyDir and are lost when
+    # the pod goes away.
+    enabled: true
+    existingClaim: ""
+    # ReadWriteMany is required for more than one replica (e.g. CephFS).
+    # With ReadWriteOnce, the chart switches the Deployment to the Recreate
+    # strategy, since two pods cannot mount the volume during a rollout.
+    accessModes:
+      - ReadWriteMany
+    size: 10Gi
+    storageClass: ""
+    annotations: {}
+
+# -----------------------------------------------------------------------------
+# Backup
+# -----------------------------------------------------------------------------
+# The databases are backed up by their operators (see extraSpec under
+# mariadb.operator and postgresql.operator). This section covers the
+# attachments volume. For a whole-namespace backup (Secrets, manifests and
+# volumes) use OADP instead or as well; see examples/oadp/.
+backup:
+  volsync:
+    # Creates a VolSync ReplicationSource that backs up the attachments PVC
+    # to a restic repository. Needs the VolSync operator.
+    enabled: false
+
+    # Cron schedule. Back up the database first and the attachments after,
+    # so every attachment the database references is in the backup.
+    schedule: "15 * * * *"
+
+    # Name of a Secret you create, with the keys RESTIC_REPOSITORY (e.g.
+    # s3:https://s3.example.com/bucket/mantis-attachments), RESTIC_PASSWORD
+    # and the backend's credentials (AWS_ACCESS_KEY_ID and
+    # AWS_SECRET_ACCESS_KEY for S3). The chart never generates it: without
+    # RESTIC_PASSWORD the backups cannot be read, so keep a copy outside the
+    # cluster. Use a separate repository path for each release.
+    repository: ""
+
+    # How the point-in-time copy of the volume is taken: Snapshot, Clone or
+    # Direct (the live volume, not point-in-time).
+    copyMethod: Snapshot
+    # Defaults to the cluster's default VolumeSnapshotClass.
+    volumeSnapshotClassName: ""
+    # For the volume created from the snapshot. On CephFS, [ReadOnlyMany]
+    # gets a shallow volume backed by the snapshot instead of a full copy.
+    storageClassName: ""
+    accessModes: []
+
+    # restic's metadata cache, kept between runs.
+    cacheCapacity: 1Gi
+    cacheStorageClassName: ""
+
+    retain:
+      hourly: 24
+      daily: 7
+      weekly: 4
+      monthly: 6
+    pruneIntervalDays: 7
+
+    # MantisBT writes attachments readable only by their owner (mode 0400),
+    # so the mover must run as the application's UID. OpenShift's
+    # restricted-v2 SCC gives both the same UID. Elsewhere set it, e.g.
+    #   runAsUser: 48
+    #   fsGroup: 48
+    moverSecurityContext: {}
+    moverResources: {}
+
+    # Merged into spec.restic of the ReplicationSource, for anything above
+    # doesn't cover (moverAffinity, customCA, unlock, ...).
+    extraSpec: {}
+
+    # The CRD is checked at render time. `helm template` has no cluster to
+    # check against; pass --api-versions volsync.backube/v1alpha1/ReplicationSource,
+    # or set this to true.
+    skipCrdCheck: false
+
+# -----------------------------------------------------------------------------
+# Networking
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8080
+  # Only with mantis.httpd.https.enabled.
+  httpsPort: 8443
+
+# OpenShift Route. The router pins each browser to one pod with a cookie, which
+# keeps MantisBT's per-session form tokens valid across replicas.
+route:
+  enabled: true
+  # Leave empty for the cluster's default <name>-<namespace>.<apps domain>.
+  host: ""
+  path: /
+  # http, or https with mantis.httpd.https.enabled and a reencrypt or
+  # passthrough termination.
+  targetPort: http
+  annotations: {}
+  # Passed to spec.tls as is. Without a certificate the router's default
+  # (wildcard) certificate is served. To paste the certificate in directly:
+  #   certificate: |
+  #     -----BEGIN CERTIFICATE-----   (server certificate, then intermediates)
+  #   key: |
+  #     -----BEGIN PRIVATE KEY-----
+  #   caCertificate: |                (optional)
+  # These end up in the release, so prefer tlsSecret or certManager.
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  # A kubernetes.io/tls Secret in this namespace with the certificate and key,
+  # e.g. from `oc create secret tls mantis-tls --cert=fullchain.pem --key=key.pem`.
+  # Served through spec.tls.externalCertificate (OpenShift 4.16+), so renewals
+  # reach the router without touching the Route; the chart grants the router
+  # read access to that one Secret. Set automatically by certManager.enabled.
+  tlsSecret: ""
+
+# A cert-manager Certificate for route.host or ingress.host, renewed by
+# cert-manager and served by the Route (through route.tlsSecret) or the
+# Ingress (as its tls Secret). cert-manager must be installed; the issuer
+# must be able to validate the host (DNS-01 works for any of them).
+certManager:
+  enabled: false
+  issuerRef:
+    # e.g. letsencrypt-prod
+    name: ""
+    kind: ClusterIssuer
+    group: cert-manager.io
+  # Defaults to <fullname>-tls.
+  secretName: ""
+  # Names besides route.host / ingress.host.
+  extraDnsNames: []
+  # cert-manager's defaults when empty: 2160h (90 days) and 1/3 of it.
+  duration: ""
+  renewBefore: ""
+  # Merged into the Certificate's spec (privateKey, subject, usages, ...).
+  extraSpec: {}
+  # With a Route: create the Secret with a self-signed certificate until
+  # cert-manager issues the real one, a minute or two after the first install.
+  # The Route is refused while its Secret does not exist. The chart reads the
+  # Secret back with `lookup` so upgrades keep the real certificate; anything
+  # that renders without cluster access (helm template, Argo CD) cannot, and
+  # would overwrite it on every sync. Set to false there, and see the README.
+  placeholderSecret: true
+  # The CRD is checked at render time. `helm template` has no cluster to
+  # check against; pass --api-versions cert-manager.io/v1/Certificate, or set
+  # this to true.
+  skipCrdCheck: false
+
+# Kubernetes Ingress, for clusters without Routes.
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  path: /
+  pathType: Prefix
+  annotations: {}
+  # Filled in by certManager.enabled when empty.
+  tls: []
+  #  - secretName: mantis-tls
+  #    hosts:
+  #      - mantis.example.com
+
+# Ingress-only NetworkPolicies. The application pods accept connections on
+# their http (and https) port only, from any source. The database pods accept
+# them only from pods in this namespace (the application, the schema Job,
+# backups, maintenance pods) and from the database operator. Other pods in the
+# namespace are not selected and stay open.
+networkPolicy:
+  enabled: false
+  database:
+    # Operator modes only. The operator connects to the database pods (for
+    # mariadb-operator: SQL for the Database, User and Grant resources, and the
+    # Galera agent for health and recovery), so it is allowed on any port.
+    # Defaults to the upstream installs: namespace mariadb-operator or
+    # cnpg-system, pods labelled app.kubernetes.io/name: mariadb-operator or
+    # cloudnative-pg. Installed through OLM on OpenShift, both usually run in
+    # openshift-operators.
+    operatorNamespace: ""
+    operatorPodLabels: {}
+    # More allowed sources, as NetworkPolicy `from` peers, e.g. a metrics
+    # scraper:
+    #   - namespaceSelector:
+    #       matchLabels:
+    #         kubernetes.io/metadata.name: openshift-user-workload-monitoring
+    extraFrom: []
+
+# -----------------------------------------------------------------------------
+# Pods
+# -----------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# Empty so OpenShift's restricted-v2 SCC assigns the UID and fsGroup. On other
+# Kubernetes distributions set fsGroup so the pod can write its volumes, e.g.
+#   fsGroup: 48
+podSecurityContext: {}
+
+securityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    memory: 1536Mi
+
+# /healthz.php checks Apache and PHP-FPM without touching the database, so a
+# database outage takes pods out of the Service instead of restarting them.
+# Startup covers plugin downloads on first start.
+startupProbe:
+  httpGet:
+    path: /healthz.php
+    port: http
+  periodSeconds: 2
+  failureThreshold: 60
+livenessProbe:
+  httpGet:
+    path: /healthz.php
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+# Readiness goes through MantisBT and the database. An empty path means
+# <contextPath>/login_page.php.
+readinessProbe:
+  httpGet:
+    path: ""
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+podDisruptionBudget:
+  # Only created when replicaCount > 1.
+  enabled: true
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+# When empty, replicas are spread across nodes on a best-effort basis.
+affinity: {}
+topologySpreadConstraints: []

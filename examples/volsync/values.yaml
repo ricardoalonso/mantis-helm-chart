@@ -1,0 +1,16 @@
+# Hourly VolSync backups of the attachments on ODF CephFS. Combine with a
+# database values file:
+#
+#   oc apply -n <namespace> -f examples/volsync/restic-secret.yaml
+#   helm install mantis ./charts/mantis -f examples/mariadb-galera.yaml \
+#     -f examples/volsync/values.yaml
+backup:
+  volsync:
+    enabled: true
+    repository: mantis-attachments-restic
+    schedule: "15 * * * *"
+    volumeSnapshotClassName: ocs-storagecluster-cephfsplugin-snapclass
+    # A shallow, snapshot-backed volume instead of a full copy every run.
+    storageClassName: ocs-storagecluster-cephfs
+    accessModes: [ReadOnlyMany]
+    cacheStorageClassName: ocs-storagecluster-ceph-rbd

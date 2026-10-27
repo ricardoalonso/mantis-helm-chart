@@ -1,0 +1,10 @@
+# PostgreSQL in a single pod (sclorg image), no operator.
+database:
+  type: postgresql
+  mode: standalone
+
+replicaCount: 2
+persistence:
+  attachments:
+    accessModes: [ReadWriteMany]
+    storageClass: ocs-storagecluster-cephfs

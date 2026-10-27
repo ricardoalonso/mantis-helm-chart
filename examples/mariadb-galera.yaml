@@ -1,0 +1,17 @@
+# MariaDB as a 3-node Galera cluster managed by mariadb-operator.
+# The operator must be installed first; see the README.
+database:
+  type: mariadb
+  mode: operator
+
+mariadb:
+  operator:
+    replicas: 3
+    storage:
+      size: 10Gi
+
+replicaCount: 2
+persistence:
+  attachments:
+    accessModes: [ReadWriteMany]
+    storageClass: ocs-storagecluster-cephfs

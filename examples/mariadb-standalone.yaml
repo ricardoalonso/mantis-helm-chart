@@ -1,0 +1,11 @@
+# MariaDB in a single pod (sclorg image), no operator.
+# Fine for small installations; the database is a single point of failure.
+database:
+  type: mariadb
+  mode: standalone
+
+replicaCount: 2
+persistence:
+  attachments:
+    accessModes: [ReadWriteMany]
+    storageClass: ocs-storagecluster-cephfs

@@ -1,0 +1,42 @@
+{{- /*
+A Galera cluster managed by mariadb-operator. The operator creates the
+database and the application user from spec.database / spec.username, and
+the Services <name> (all nodes), <name>-primary and <name>-secondary; MantisBT
+connects to <name>-primary.
+*/ -}}
+{{- if and (eq .Values.database.mode "operator") (eq .Values.database.type "mariadb") }}
+{{- $op := .Values.mariadb.operator }}
+{{- $secret := include "mantis.db.secretName" . }}
+{{- $keys := .Values.database.auth.secretKeys }}
+{{- $spec := dict
+  "replicas" (int $op.replicas)
+  "galera" (dict "enabled" true)
+  "rootPasswordSecretKeyRef" (dict "name" $secret "key" $keys.rootPassword)
+  "username" .Values.database.auth.username
+  "passwordSecretKeyRef" (dict "name" $secret "key" $keys.password)
+  "database" .Values.database.name
+  "storage" (dict "size" $op.storage.size)
+  "myCnf" $op.myCnf
+  "updateStrategy" (dict "type" "ReplicasFirstPrimaryLast")
+  "podDisruptionBudget" (dict "maxUnavailable" 1)
+  "affinity" (dict "antiAffinityEnabled" true)
+  "podMetadata" (dict "labels" (fromYaml (include "mantis.db.selectorLabels" .)))
+}}
+{{- with $op.image }}{{ $_ := set $spec "image" . }}{{ end }}
+{{- with $op.storage.storageClass }}{{ $_ := set $spec.storage "storageClassName" . }}{{ end }}
+{{- with $op.resources }}{{ $_ := set $spec "resources" . }}{{ end }}
+{{- with .Values.imagePullSecrets }}{{ $_ := set $spec "imagePullSecrets" . }}{{ end }}
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: MariaDB
+metadata:
+  name: {{ include "mantis.db.serverName" . }}
+  labels:
+    {{- include "mantis.db.labels" . | nindent 4 }}
+  annotations:
+    # Not deleted by `helm uninstall`, so uninstalling does not take the
+    # database down. The operator keeps the PVCs even when this is deleted;
+    # they carry the label app.kubernetes.io/instance=<this resource's name>.
+    helm.sh/resource-policy: keep
+spec:
+  {{- mustMergeOverwrite $spec (deepCopy $op.extraSpec) | toYaml | nindent 2 }}
+{{- end }}

@@ -1,0 +1,56 @@
+{{- $cm := .Values.certManager }}
+{{- if $cm.enabled }}
+{{- $host := include "mantis.host" . }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "mantis.fullname" . }}
+  labels:
+    {{- include "mantis.labels" . | nindent 4 }}
+spec:
+  {{- $spec := dict
+        "secretName" (include "mantis.certManager.secretName" .)
+        "dnsNames" (prepend ($cm.extraDnsNames | default list) $host | uniq)
+        "issuerRef" (dict "name" $cm.issuerRef.name "kind" ($cm.issuerRef.kind | default "ClusterIssuer") "group" ($cm.issuerRef.group | default "cert-manager.io")) }}
+  {{- with $cm.duration }}{{ $_ := set $spec "duration" . }}{{ end }}
+  {{- with $cm.renewBefore }}{{ $_ := set $spec "renewBefore" . }}{{ end }}
+  {{- /* A route's externalCertificate must be a kubernetes.io/tls Secret,
+         which is what cert-manager writes; it also keeps the Secret on
+         uninstall unless told otherwise, so a reinstall reuses it. */}}
+  {{- toYaml (mergeOverwrite $spec (deepCopy ($cm.extraSpec | default dict))) | nindent 2 }}
+{{- end }}
+{{- /* A Route refuses an externalCertificate whose Secret does not exist, and
+       cert-manager only writes it once the order completes, minutes later.
+       So the chart creates the Secret first, with a self-signed certificate
+       for the host, and cert-manager replaces it: it lacks cert-manager's
+       issuer annotations, which makes cert-manager issue into it. Once the
+       Secret exists its current data is rendered back, so an upgrade never
+       undoes a real certificate. A Secret Helm does not own (left by an
+       earlier cert-manager run) is left alone. */}}
+{{- if and $cm.enabled $cm.placeholderSecret .Values.route.enabled }}
+{{- $name := include "mantis.certManager.secretName" . }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+{{- $annotations := dig "metadata" "annotations" dict $existing }}
+{{- $ours := and (eq (get $annotations "meta.helm.sh/release-name") .Release.Name) (eq (get $annotations "meta.helm.sh/release-namespace") .Release.Namespace) }}
+{{- if or (not $existing) $ours }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "mantis.labels" . | nindent 4 }}
+  annotations:
+    # cert-manager keeps the Secret on uninstall by default; so does Helm.
+    helm.sh/resource-policy: keep
+type: kubernetes.io/tls
+data:
+  {{- if and $existing $existing.data }}
+  {{- toYaml $existing.data | nindent 2 }}
+  {{- else }}
+  {{- $cert := genSelfSignedCert (include "mantis.host" .) nil (list (include "mantis.host" .)) 90 }}
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key | b64enc }}
+  {{- end }}
+{{- end }}
+{{- end }}

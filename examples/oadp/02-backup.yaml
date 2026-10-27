@@ -1,0 +1,19 @@
+# In the MantisBT namespace: a one-off backup of everything in it, including
+# the Secrets (crypto-master-salt, database credentials) and the volumes.
+# Non-admin backups always cover only their own namespace.
+#
+#   oc create -n <namespace> -f 02-backup.yaml
+#   oc get nonadminbackup -n <namespace> -w
+#
+# With a database operator, its volumes are included too, but restore the
+# database from the operator's own backup: a snapshot of a running cluster is
+# only crash-consistent.
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminBackup
+metadata:
+  generateName: mantis-
+spec:
+  backupSpec:
+    storageLocation: mantis
+    snapshotMoveData: true
+    ttl: 720h

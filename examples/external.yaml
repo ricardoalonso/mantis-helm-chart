@@ -1,0 +1,19 @@
+# A database you run yourself. Create the credentials Secret first:
+#
+#   oc create secret generic mantis-db \
+#     --from-literal=username=mantis --from-literal=password='...'
+database:
+  type: mariadb          # or postgresql
+  mode: external
+  name: mantis
+  external:
+    host: mariadb.example.com
+    port: 3306
+  auth:
+    existingSecret: mantis-db
+
+replicaCount: 2
+persistence:
+  attachments:
+    accessModes: [ReadWriteMany]
+    storageClass: ocs-storagecluster-cephfs

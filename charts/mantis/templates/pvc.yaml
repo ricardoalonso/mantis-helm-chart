@@ -1,0 +1,24 @@
+{{- $pa := .Values.persistence.attachments }}
+{{- if and $pa.enabled (not $pa.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "mantis.fullname" . }}-attachments
+  labels:
+    {{- include "mantis.labels" . | nindent 4 }}
+  annotations:
+    # Attachments are user data: never delete them with the release.
+    helm.sh/resource-policy: keep
+    {{- with $pa.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml $pa.accessModes | nindent 4 }}
+  {{- with $pa.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $pa.size }}
+{{- end }}

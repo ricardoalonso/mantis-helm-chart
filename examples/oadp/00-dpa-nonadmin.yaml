@@ -1,0 +1,56 @@
+# For the cluster administrator: the parts of the DataProtectionApplication
+# that non-admin backups of a MantisBT namespace rely on. Merge them into the
+# existing DPA; there can be only one per cluster. Tested with OADP 1.6.
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: dpa
+  namespace: openshift-adp
+spec:
+  configuration:
+    velero:
+      defaultPlugins:
+        - openshift
+        - aws
+        - csi
+      # Copy CSI snapshots to object storage (Data Mover). Without it, a
+      # backup's volume data stays as snapshots on the same storage cluster.
+      defaultSnapshotMoveData: true
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+      # Mount CephFS snapshots read-only during data movement, so ceph-csi
+      # gives a shallow volume backed by the snapshot instead of a full copy.
+      backupPVC:
+        ocs-storagecluster-cephfs:
+          storageClass: ocs-storagecluster-cephfs
+          readOnly: true
+          spcNoRelabeling: true
+  # The admin's own location. Non-admin users bring theirs with a
+  # NonAdminBackupStorageLocation (see 01-storage-location.yaml).
+  backupLocations:
+    - name: default
+      velero:
+        provider: aws
+        default: true
+        objectStorage:
+          bucket: oadp-cluster
+          prefix: velero
+        config:
+          region: us-east-1
+          s3Url: https://s3.example.com
+          s3ForcePathStyle: "true"
+        credential:
+          name: cloud-credentials
+          key: cloud
+  nonAdmin:
+    enable: true
+    # Namespace users' storage locations wait for an admin to approve their
+    # NonAdminBackupStorageLocationRequest:
+    #   oc get nonadminbackupstoragelocationrequests -n openshift-adp
+    #   oc patch nonadminbackupstoragelocationrequest <name> -n openshift-adp \
+    #     --type merge -p '{"spec":{"approvalDecision":"approve"}}'
+    requireApprovalForBSL: true
+    # Settings every NonAdminBackup gets, whatever the user asks for.
+    enforceBackupSpec:
+      snapshotMoveData: true

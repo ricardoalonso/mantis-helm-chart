@@ -1,0 +1,170 @@
+{{- /*
+Fail early, with a message that says what to change, rather than rendering
+something that installs and then does not work.
+*/ -}}
+{{- $db := .Values.database }}
+
+{{- if not (has $db.type (list "mariadb" "postgresql")) }}
+{{- fail (printf "database.type must be mariadb or postgresql, not %q" $db.type) }}
+{{- end }}
+
+{{- if not (has $db.mode (list "standalone" "operator" "external")) }}
+{{- fail (printf "database.mode must be standalone, operator or external, not %q" $db.mode) }}
+{{- end }}
+
+{{- if and (eq $db.mode "external") (not $db.external.host) }}
+{{- fail "database.mode=external needs database.external.host" }}
+{{- end }}
+
+{{- if and (eq $db.mode "operator") (not $db.skipOperatorCheck) }}
+{{- if and (eq $db.type "mariadb") (not (.Capabilities.APIVersions.Has "k8s.mariadb.com/v1alpha1/MariaDB")) }}
+{{- fail "database.type=mariadb with mode=operator needs mariadb-operator, and its CRDs (k8s.mariadb.com/v1alpha1) are not installed in this cluster. Ask a cluster administrator to install it (see the README), or use mode=standalone. With `helm template`, pass --api-versions k8s.mariadb.com/v1alpha1/MariaDB or set database.skipOperatorCheck=true." }}
+{{- end }}
+{{- if and (eq $db.type "postgresql") (not (.Capabilities.APIVersions.Has "postgresql.cnpg.io/v1/Cluster")) }}
+{{- fail "database.type=postgresql with mode=operator needs CloudNativePG, and its CRDs (postgresql.cnpg.io/v1) are not installed in this cluster. Ask a cluster administrator to install it (see the README), or use mode=standalone. With `helm template`, pass --api-versions postgresql.cnpg.io/v1/Cluster or set database.skipOperatorCheck=true." }}
+{{- end }}
+{{- end }}
+
+{{- if and (eq $db.mode "operator") (eq $db.type "postgresql") $db.auth.existingSecret }}
+{{- if or (ne $db.auth.secretKeys.username "username") (ne $db.auth.secretKeys.password "password") }}
+{{- fail "CloudNativePG reads the bootstrap credentials from the keys `username` and `password`; database.auth.secretKeys cannot be changed with database.type=postgresql and mode=operator" }}
+{{- end }}
+{{- end }}
+
+{{- if and (eq $db.mode "operator") (eq $db.type "mariadb") }}
+{{- $n := int .Values.mariadb.operator.replicas }}
+{{- if or (lt $n 3) (eq (mod $n 2) 0) }}
+{{- fail (printf "mariadb.operator.replicas is %d; Galera needs an odd number of at least 3 nodes to keep quorum when one fails" $n) }}
+{{- end }}
+{{- end }}
+
+{{- $pa := .Values.persistence.attachments }}
+{{- if and (gt (int .Values.replicaCount) 1) $pa.enabled (not $pa.existingClaim) (not (has "ReadWriteMany" $pa.accessModes)) }}
+{{- fail "replicaCount > 1 needs attachments storage every replica can mount: set persistence.attachments.accessModes to [ReadWriteMany] with a storage class that supports it (e.g. CephFS), or set replicaCount to 1" }}
+{{- end }}
+
+{{- $vs := .Values.backup.volsync }}
+{{- if $vs.enabled }}
+{{- if not $pa.enabled }}
+{{- fail "backup.volsync.enabled needs persistence.attachments.enabled: there is no volume to back up" }}
+{{- end }}
+{{- if not $vs.repository }}
+{{- fail "backup.volsync.enabled needs backup.volsync.repository, the name of a Secret with RESTIC_REPOSITORY, RESTIC_PASSWORD and the backend's credentials (see values.yaml)" }}
+{{- end }}
+{{- if and (not $vs.skipCrdCheck) (not (.Capabilities.APIVersions.Has "volsync.backube/v1alpha1/ReplicationSource")) }}
+{{- fail "backup.volsync.enabled needs VolSync, and its CRDs (volsync.backube/v1alpha1) are not installed in this cluster. Ask a cluster administrator to install it (see the README), or disable it. With `helm template`, pass --api-versions volsync.backube/v1alpha1/ReplicationSource or set backup.volsync.skipCrdCheck=true." }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.mantis.email.enabled .Values.mantis.email.smtp.auth .Values.mantis.existingSecret }}
+{{- /* Nothing to check here: the key has to exist in a Secret we cannot see at render time. */ -}}
+{{- else if and .Values.mantis.email.enabled .Values.mantis.email.smtp.auth (not .Values.mantis.email.smtp.password) }}
+{{- fail "mantis.email.smtp.auth is on but mantis.email.smtp.password is empty" }}
+{{- end }}
+
+{{- $m := .Values.mantis }}
+{{- if not (regexMatch "^/?([A-Za-z0-9._~-]+/?)*$" (toString $m.contextPath)) }}
+{{- fail (printf "mantis.contextPath %q is not a URL path such as / or /mantis" (toString $m.contextPath)) }}
+{{- end }}
+{{- if has "." (splitList "/" (toString $m.contextPath)) }}
+{{- fail (printf "mantis.contextPath %q must not contain . or .. segments" $m.contextPath) }}
+{{- end }}
+{{- if has ".." (splitList "/" (toString $m.contextPath)) }}
+{{- fail (printf "mantis.contextPath %q must not contain . or .. segments" $m.contextPath) }}
+{{- end }}
+{{- if has (include "mantis.contextPath" .) (list "/healthz.php" "/server-status" "/php-status") }}
+{{- fail (printf "mantis.contextPath %q clashes with a URL the image already serves" $m.contextPath) }}
+{{- end }}
+
+{{- if and $m.ldap.enabled (not $m.ldap.server) }}
+{{- fail "mantis.ldap.enabled needs mantis.ldap.server" }}
+{{- end }}
+{{- if and $m.ldap.enabled $m.ldap.bindDn (not $m.existingSecret) (not $m.ldap.bindPassword) }}
+{{- fail "mantis.ldap.bindDn is set but mantis.ldap.bindPassword is empty (or put it in mantis.existingSecret under ldap-bind-password)" }}
+{{- end }}
+
+{{- if $m.oidc.enabled }}
+{{- if not (regexMatch "^https?://[^[:space:]\"\\\\$]+$" (toString $m.oidc.issuer)) }}
+{{- fail "mantis.oidc.enabled needs mantis.oidc.issuer, the issuer URL, e.g. https://sso.example.com/realms/mantis" }}
+{{- end }}
+{{- if not $m.oidc.clientId }}
+{{- fail "mantis.oidc.enabled needs mantis.oidc.clientId" }}
+{{- end }}
+{{- if and (not $m.oidc.clientSecret) (not $m.oidc.existingSecret) (not $m.existingSecret) }}
+{{- fail "mantis.oidc.enabled needs mantis.oidc.clientSecret or mantis.oidc.existingSecret" }}
+{{- end }}
+{{- range $k, $v := dict "clientSecret" $m.oidc.clientSecret "cryptoPassphrase" $m.oidc.cryptoPassphrase }}
+{{- if regexMatch "[\"\\\\$[:cntrl:]]" (toString $v) }}
+{{- fail (printf "mantis.oidc.%s must not contain \", \\, $ or control characters (the image writes it into an Apache directive)" $k) }}
+{{- end }}
+{{- end }}
+{{- if and $m.oidc.cryptoPassphrase (lt (len $m.oidc.cryptoPassphrase) 32) }}
+{{- fail "mantis.oidc.cryptoPassphrase must be at least 32 characters (or leave it empty to have one generated)" }}
+{{- end }}
+{{- if not (has "openid" (splitList " " (toString $m.oidc.scopes))) }}
+{{- fail (printf "mantis.oidc.scopes %q must include openid" $m.oidc.scopes) }}
+{{- end }}
+{{- end }}
+
+{{- range $m.plugins.archives }}
+{{- if not (and (kindIs "map" .) (regexMatch "^(https?|file)://[^#[:space:]]+$" (toString .url)) (regexMatch "^[0-9A-Fa-f]{64}$" (toString .sha256))) }}
+{{- fail (printf "mantis.plugins.archives: each entry needs url (http, https or file) and sha256 (64 hex digits); got %v" .) }}
+{{- end }}
+{{- end }}
+
+{{- range $dir, $files := dict "php" $m.confd.php "phpFpm" $m.confd.phpFpm "httpd" $m.confd.httpd }}
+{{- $ext := ternary "ini" "conf" (eq $dir "php") }}
+{{- range $file, $_ := $files }}
+{{- if not (regexMatch (printf "^[A-Za-z0-9_.-]+\\.%s$" $ext) $file) }}
+{{- fail (printf "mantis.confd.%s: %q must be a plain file name ending in .%s, or the image ignores it" $dir $file $ext) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $file, $_ := $m.hooks }}
+{{- if not (regexMatch "^[A-Za-z0-9_.-]+\\.sh$" $file) }}
+{{- fail (printf "mantis.hooks: %q must be a plain file name ending in .sh, or the image ignores it" $file) }}
+{{- end }}
+{{- end }}
+
+{{- if and (not $m.httpd.https.enabled) (eq (toString .Values.route.targetPort) "https") }}
+{{- fail "route.targetPort is https but mantis.httpd.https.enabled is false" }}
+{{- end }}
+
+{{- $cm := .Values.certManager }}
+{{- if $cm.enabled }}
+{{- if not (or .Values.route.enabled .Values.ingress.enabled) }}
+{{- fail "certManager.enabled needs route.enabled or ingress.enabled: there is nothing to serve the certificate" }}
+{{- end }}
+{{- if not (include "mantis.host" .) }}
+{{- fail "certManager.enabled needs route.host or ingress.host: the certificate is issued for that name" }}
+{{- end }}
+{{- if not $cm.issuerRef.name }}
+{{- fail "certManager.enabled needs certManager.issuerRef.name, e.g. letsencrypt-prod (see `oc get clusterissuers`)" }}
+{{- end }}
+{{- if and .Values.ingress.enabled .Values.ingress.tls }}
+{{- fail "certManager.enabled fills in ingress.tls itself; leave ingress.tls empty" }}
+{{- end }}
+{{- if and .Values.route.enabled .Values.route.tlsSecret }}
+{{- fail "certManager.enabled serves its own Secret on the Route; leave route.tlsSecret empty" }}
+{{- end }}
+{{- if and (not $cm.skipCrdCheck) (not (.Capabilities.APIVersions.Has "cert-manager.io/v1/Certificate")) }}
+{{- fail "certManager.enabled needs cert-manager, and its CRDs (cert-manager.io/v1) are not installed in this cluster. With `helm template`, pass --api-versions cert-manager.io/v1/Certificate or set certManager.skipCrdCheck=true." }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.route.enabled (include "mantis.route.tlsSecret" .) }}
+{{- $rt := .Values.route.tls | default dict }}
+{{- if not $rt.termination }}
+{{- fail "a Route TLS Secret (route.tlsSecret or certManager) needs route.tls.termination: edge or reencrypt" }}
+{{- end }}
+{{- if eq (toString $rt.termination) "passthrough" }}
+{{- fail "route.tls.termination=passthrough cannot use a Route TLS Secret: the router never sees the TLS session. Use mantis.httpd.https.existingSecret instead" }}
+{{- end }}
+{{- if or $rt.certificate $rt.key }}
+{{- fail "set either route.tls.certificate/key or a Route TLS Secret (route.tlsSecret or certManager), not both" }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.route.enabled .Values.ingress.enabled }}
+{{- fail "enable either route or ingress, not both" }}
+{{- end }}

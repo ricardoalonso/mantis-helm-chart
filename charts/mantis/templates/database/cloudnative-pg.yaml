@@ -1,0 +1,36 @@
+{{- /*
+A PostgreSQL cluster managed by CloudNativePG: one primary plus streaming
+replicas with automated failover. The operator creates the database and its
+owner from the chart's credentials Secret, and the Services <name>-rw
+(primary), <name>-ro and <name>-r; MantisBT connects to <name>-rw.
+*/ -}}
+{{- if and (eq .Values.database.mode "operator") (eq .Values.database.type "postgresql") }}
+{{- $op := .Values.postgresql.operator }}
+{{- $spec := dict
+  "instances" (int $op.instances)
+  "bootstrap" (dict "initdb" (dict
+      "database" .Values.database.name
+      "owner" .Values.database.auth.username
+      "secret" (dict "name" (include "mantis.db.secretName" .))))
+  "storage" (dict "size" $op.storage.size)
+  "affinity" (dict "enablePodAntiAffinity" true "topologyKey" "kubernetes.io/hostname")
+  "inheritedMetadata" (dict "labels" (fromYaml (include "mantis.db.selectorLabels" .)))
+}}
+{{- with $op.imageName }}{{ $_ := set $spec "imageName" . }}{{ end }}
+{{- with $op.storage.storageClass }}{{ $_ := set $spec.storage "storageClass" . }}{{ end }}
+{{- with $op.resources }}{{ $_ := set $spec "resources" . }}{{ end }}
+{{- with $op.parameters }}{{ $_ := set $spec "postgresql" (dict "parameters" .) }}{{ end }}
+{{- with .Values.imagePullSecrets }}{{ $_ := set $spec "imagePullSecrets" . }}{{ end }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "mantis.db.serverName" . }}
+  labels:
+    {{- include "mantis.db.labels" . | nindent 4 }}
+  annotations:
+    # Not deleted by `helm uninstall`: CloudNativePG deletes its PVCs with it, which would
+    # destroy the database. Delete it by hand once the data is not needed.
+    helm.sh/resource-policy: keep
+spec:
+  {{- mustMergeOverwrite $spec (deepCopy $op.extraSpec) | toYaml | nindent 2 }}
+{{- end }}

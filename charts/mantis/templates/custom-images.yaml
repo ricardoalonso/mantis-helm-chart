@@ -1,0 +1,13 @@
+{{- $ci := .Values.mantis.customImages -}}
+{{- if and $ci.files (not $ci.existingConfigMap) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mantis.fullname" . }}-images
+  labels:
+    {{- include "mantis.labels" . | nindent 4 }}
+binaryData:
+  {{- range $file, $content := $ci.files }}
+  {{ $file | quote }}: {{ $content | nospace | quote }}
+  {{- end }}
+{{- end }}

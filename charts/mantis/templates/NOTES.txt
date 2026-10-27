@@ -1,0 +1,66 @@
+{{- $ctx := include "mantis.contextPath" . -}}
+MantisBT {{ .Chart.AppVersion }} is being deployed as {{ include "mantis.fullname" . }}.
+
+Database: {{ .Values.database.type }}, {{ .Values.database.mode }}
+{{- if eq .Values.database.mode "operator" }}
+{{- if eq .Values.database.type "mariadb" }} (mariadb-operator, {{ .Values.mariadb.operator.replicas }}-node Galera)
+{{- else }} (CloudNativePG, {{ .Values.postgresql.operator.instances }} instances)
+{{- end }}
+{{- end }}
+Connects to: {{ include "mantis.db.host" . }}:{{ include "mantis.db.port" . }}
+
+{{- if .Values.schemaJob.enabled }}
+
+The schema is installed by the Job {{ include "mantis.fullname" . }}-schema. On a first
+install with an operator this waits for the database cluster, which takes a
+few minutes. Follow it with:
+
+  oc logs -n {{ .Release.Namespace }} -f job/{{ include "mantis.fullname" . }}-schema
+{{- end }}
+
+Open MantisBT:
+{{- if .Values.route.enabled }}
+{{- if .Values.route.host }}
+  {{ include "mantis.url" . }}
+{{- else }}
+  echo "https://$(oc get route -n {{ .Release.Namespace }} {{ include "mantis.fullname" . }} -o jsonpath='{.spec.host}'){{ $ctx }}/"
+{{- end }}
+{{- else if .Values.ingress.enabled }}
+  {{ include "mantis.url" . | default (printf "http://%s%s/" .Values.ingress.host $ctx) }}
+{{- else }}
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "mantis.fullname" . }} 8080:{{ .Values.service.port }}
+  http://127.0.0.1:8080{{ $ctx }}/
+{{- end }}
+
+Log in as "administrator". The password, set on first install:
+
+  kubectl get secret -n {{ .Release.Namespace }} {{ include "mantis.app.secretName" . }} -o jsonpath='{.data.admin-password}' | base64 -d; echo
+
+Change it after logging in; the chart does not touch it again.
+{{- if .Values.mantis.oidc.enabled }}
+
+Single sign-on is on (issuer {{ .Values.mantis.oidc.issuer }}). Register these
+at the identity provider, for client {{ .Values.mantis.oidc.clientId }}:
+
+  redirect URI              {{ include "mantis.url" . | default (printf "https://<host>%s/" $ctx) }}oidc/callback
+  post-logout redirect URI  {{ include "mantis.url" . | default (printf "https://<host>%s/" $ctx) }}login_page.php
+{{- with .Values.mantis.oidc.localUsers }}
+
+Break-glass password login for {{ join ", " . }}:
+  {{ include "mantis.url" $ | default (printf "https://<host>%s/" $ctx) }}login_page.php?local=1
+{{- end }}
+{{- end }}
+{{- if or .Values.mantis.plugins.archives .Values.mantis.plugins.existingSecret }}
+
+Plugins are downloaded when each pod starts. Enable them in
+Manage > Manage Plugins.
+{{- end }}
+{{- if not .Values.persistence.attachments.enabled }}
+
+WARNING: persistence.attachments.enabled is false. Attachments are stored in
+an emptyDir and are lost whenever a pod is replaced.
+{{- end }}
+{{- if not .Values.mantis.email.enabled }}
+
+Email notifications are off. Set mantis.email.* to enable them.
+{{- end }}

@@ -1,0 +1,67 @@
+{{- if .Values.route.enabled }}
+{{- with include "mantis.route.tlsSecret" . }}
+# The router reads the certificate from the Secret itself, so its service
+# account needs read access to it -- to this one Secret only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "mantis.fullname" $ }}-route-tls
+  labels:
+    {{- include "mantis.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ . | quote }}]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "mantis.fullname" $ }}-route-tls
+  labels:
+    {{- include "mantis.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "mantis.fullname" $ }}-route-tls
+subjects:
+  - kind: ServiceAccount
+    name: router
+    namespace: openshift-ingress
+---
+{{- end }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "mantis.fullname" . }}
+  labels:
+    {{- include "mantis.labels" . | nindent 4 }}
+  {{- with .Values.route.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.route.host }}
+  host: {{ . }}
+  {{- end }}
+  path: {{ .Values.route.path }}
+  to:
+    kind: Service
+    name: {{ include "mantis.fullname" . }}
+    weight: 100
+  port:
+    targetPort: {{ .Values.route.targetPort | default "http" }}
+  {{- $secret := include "mantis.route.tlsSecret" . }}
+  {{- if $secret }}
+  tls:
+    {{- toYaml (omit (.Values.route.tls | default dict) "certificate" "key") | nindent 4 }}
+    externalCertificate:
+      name: {{ $secret }}
+  {{- else }}
+  {{- with .Values.route.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  wildcardPolicy: None
+{{- end }}

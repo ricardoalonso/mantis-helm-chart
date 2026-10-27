@@ -1,0 +1,87 @@
+{{- if .Values.schemaJob.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mantis.fullname" . }}-schema
+  labels:
+    {{- include "mantis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: schema
+  annotations:
+    # After install/upgrade, so the database and the config it reads exist.
+    # The previous run is kept until the next one, for its logs.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.schemaJob.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.schemaJob.activeDeadlineSeconds }}
+  # Hooks are not removed by `helm uninstall`; this cleans up the last run.
+  ttlSecondsAfterFinished: {{ .Values.schemaJob.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "mantis.labels" . | nindent 8 }}
+        app.kubernetes.io/component: schema
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "mantis.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: schema
+          image: {{ include "mantis.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # Exit 3 means the database does not accept connections yet,
+              # which on first install is expected for a few minutes while the
+              # database comes up. Anything else is final.
+              while :; do
+                php /opt/mantis-chart/schema.php
+                rc=$?
+                [ "$rc" -ne 3 ] && exit "$rc"
+                echo "Retrying in 10s"
+                sleep 10
+              done
+          env:
+            - name: MANTIS_CONFIG_FOLDER
+              value: /mantis/config/
+            - name: MANTIS_ADMIN_PASSWORD_FILE
+              value: /mantis/secrets/app/admin-password
+          {{- with .Values.schemaJob.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "mantis.configVolumeMounts" . | nindent 12 }}
+            - name: files
+              mountPath: /opt/mantis-chart/schema.php
+              subPath: schema.php
+              readOnly: true
+      volumes:
+        {{- include "mantis.configVolumes" . | nindent 8 }}
+        - name: files
+          configMap:
+            name: {{ include "mantis.fullname" . }}-files
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

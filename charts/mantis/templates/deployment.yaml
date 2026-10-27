@@ -1,0 +1,329 @@
+{{- $pa := .Values.persistence.attachments -}}
+{{- $m := .Values.mantis -}}
+{{- $ci := $m.customImages -}}
+{{- $ctx := include "mantis.contextPath" . -}}
+{{- $readiness := deepCopy (.Values.readinessProbe | default dict) -}}
+{{- if and $readiness.httpGet (not $readiness.httpGet.path) -}}
+{{- $_ := set $readiness.httpGet "path" (printf "%s/login_page.php" $ctx) -}}
+{{- end -}}
+{{- $rwo := and $pa.enabled (not $pa.existingClaim) (not (has "ReadWriteMany" $pa.accessModes)) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mantis.fullname" . }}
+  labels:
+    {{- include "mantis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "mantis.selectorLabels" . | nindent 6 }}
+  strategy:
+    {{- if $rwo }}
+    # A ReadWriteOnce volume cannot be mounted by the old and new pod at once
+    # when they land on different nodes, so a rolling update would hang.
+    type: Recreate
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+    {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "mantis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Roll the pods when the configuration changes. The credentials
+        # Secrets are left out: their values only change when set explicitly,
+        # and the running pods re-read them from the mounted files anyway.
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+        {{- if $m.oidc.enabled }}
+        # The OIDC client secret and passphrase are only read at start.
+        checksum/oidc: {{ printf "%s/%s/%s" $m.oidc.clientSecret $m.oidc.cryptoPassphrase $m.oidc.existingSecret | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "mantis.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mantis
+          image: {{ include "mantis.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            {{- if $m.httpd.https.enabled }}
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+            {{- end }}
+          env:
+            # --- MantisBT ---------------------------------------------------
+            - name: MANTIS_CONFIG_FOLDER
+              value: /mantis/config/
+            - name: MANTIS_CONTEXT_PATH
+              value: {{ $ctx | default "/" | quote }}
+            - name: MANTIS_ADMINISTRATION_ENABLED
+              value: {{ $m.administration.enabled | quote }}
+            {{- if $m.plugins.existingSecret }}
+            - name: MANTIS_PLUGINS_FILE
+              value: /mantis/secrets/plugins/list
+            {{- else if $m.plugins.archives }}
+            - name: MANTIS_PLUGINS
+              value: {{ include "mantis.pluginList" . | quote }}
+            {{- end }}
+            {{- if $m.oidc.enabled }}
+            # --- Single sign-on ---------------------------------------------
+            - name: MANTIS_OIDC_ISSUER
+              value: {{ $m.oidc.issuer | quote }}
+            - name: MANTIS_OIDC_CLIENT_ID
+              value: {{ $m.oidc.clientId | quote }}
+            - name: MANTIS_OIDC_CLIENT_SECRET_FILE
+              value: /mantis/secrets/oidc/client-secret
+            - name: MANTIS_OIDC_CRYPTO_PASSPHRASE_FILE
+              value: /mantis/secrets/app/oidc-crypto-passphrase
+            - name: MANTIS_OIDC_LOCAL_USERS
+              value: {{ $m.oidc.localUsers | default (list "none") | join "," | quote }}
+            {{- include "mantis.env" (list
+                  (list "MANTIS_OIDC_USERNAME_CLAIM" $m.oidc.usernameClaim)
+                  (list "MANTIS_OIDC_SCOPES" $m.oidc.scopes)) | nindent 12 }}
+            {{- end }}
+            # --- PHP --------------------------------------------------------
+            {{- $php := list
+                  (list "PHP_DATE_TIMEZONE" $m.timezone)
+                  (list "PHP_UPLOAD_MAX_FILESIZE" $m.php.uploadMaxFilesize)
+                  (list "PHP_POST_MAX_SIZE" $m.php.postMaxSize)
+                  (list "PHP_MEMORY_LIMIT" $m.php.memoryLimit)
+                  (list "PHP_MAX_EXECUTION_TIME" $m.php.maxExecutionTime)
+                  (list "PHP_MAX_INPUT_TIME" $m.php.maxInputTime)
+                  (list "PHP_MAX_INPUT_VARS" $m.php.maxInputVars)
+                  (list "PHP_DISPLAY_ERRORS" $m.php.displayErrors)
+                  (list "PHP_ERROR_REPORTING" $m.php.errorReporting)
+                  (list "PHP_OPCACHE_VALIDATE_TIMESTAMPS" $m.php.opcacheValidateTimestamps) }}
+            {{- range $k, $v := $m.php.ini }}
+            {{- $php = append $php (list (printf "PHP_INI_%s" (include "mantis.envKey" $k)) $v) }}
+            {{- end }}
+            {{- include "mantis.env" $php | nindent 12 }}
+            # --- PHP-FPM ----------------------------------------------------
+            {{- $fpm := list
+                  (list "PHP_FPM_PM" $m.phpFpm.pm)
+                  (list "PHP_FPM_MAX_CHILDREN" $m.phpFpm.maxChildren)
+                  (list "PHP_FPM_START_SERVERS" $m.phpFpm.startServers)
+                  (list "PHP_FPM_MIN_SPARE_SERVERS" $m.phpFpm.minSpareServers)
+                  (list "PHP_FPM_MAX_SPARE_SERVERS" $m.phpFpm.maxSpareServers)
+                  (list "PHP_FPM_PROCESS_IDLE_TIMEOUT" $m.phpFpm.processIdleTimeout)
+                  (list "PHP_FPM_MAX_REQUESTS" $m.phpFpm.maxRequests)
+                  (list "PHP_FPM_REQUEST_TERMINATE_TIMEOUT" $m.phpFpm.requestTerminateTimeout) }}
+            {{- range $k, $v := $m.phpFpm.pool }}
+            {{- $fpm = append $fpm (list (printf "PHP_FPM_POOL_%s" (include "mantis.envKey" $k)) $v) }}
+            {{- end }}
+            {{- include "mantis.env" $fpm | nindent 12 }}
+            # --- Apache -----------------------------------------------------
+            {{- include "mantis.env" (list
+                  (list "HTTPD_SERVER_NAME" ($m.httpd.serverName | default (include "mantis.host" .)))
+                  (list "HTTPD_REQUEST_TIMEOUT" $m.httpd.requestTimeout)
+                  (list "HTTPD_LOG_LEVEL" $m.httpd.logLevel)
+                  (list "HTTPD_TRUSTED_PROXIES" (join " " ($m.httpd.trustedProxies | default list)))
+                  (list "HTTPD_REMOTEIP_HEADER" $m.httpd.remoteIpHeader)) | nindent 12 }}
+            - name: HTTPD_STATUS_ALLOW
+              value: {{ (kindIs "slice" $m.httpd.statusAllow) | ternary (join " " $m.httpd.statusAllow) (toString $m.httpd.statusAllow) | quote }}
+            - name: HTTPD_ENABLE_HTTPS
+              value: {{ $m.httpd.https.enabled | quote }}
+            {{- if and $m.httpd.https.enabled $m.httpd.https.existingSecret }}
+            - name: HTTPD_TLS_CERT_FILE
+              value: /mantis/secrets/tls/tls.crt
+            - name: HTTPD_TLS_KEY_FILE
+              value: /mantis/secrets/tls/tls.key
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $readiness }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "mantis.configVolumeMounts" . | nindent 12 }}
+            - name: attachments
+              mountPath: /mantis/attachments
+            {{- if or $ci.existingConfigMap $ci.files }}
+            # A directory of its own, so the image's images/ stays intact. Not a
+            # subPath mount, so edits to the ConfigMap reach running pods.
+            - name: custom-images
+              mountPath: /var/www/html/mantis/images/custom
+              readOnly: true
+            {{- end }}
+            # Filled on every start with the image's plugins and the
+            # downloaded ones. One per pod, so a pod starting never rewrites
+            # files under one that is serving.
+            - name: plugins
+              mountPath: /mantis/plugins
+            - name: confd
+              mountPath: /mantis/conf.d
+              readOnly: true
+            {{- if $m.hooks }}
+            - name: hooks
+              mountPath: /mantis/entrypoint.d
+              readOnly: true
+            {{- end }}
+            {{- if $m.plugins.existingSecret }}
+            - name: plugins-list
+              mountPath: /mantis/secrets/plugins
+              readOnly: true
+            {{- end }}
+            {{- if $m.oidc.enabled }}
+            - name: oidc-credentials
+              mountPath: /mantis/secrets/oidc
+              readOnly: true
+            {{- end }}
+            {{- if and $m.httpd.https.enabled $m.httpd.https.existingSecret }}
+            - name: tls
+              mountPath: /mantis/secrets/tls
+              readOnly: true
+            {{- end }}
+            # The image's PHP state directories are root:apache 0770, which the
+            # arbitrary UID OpenShift assigns cannot write. Without a writable
+            # session directory MantisBT's form tokens fail on every submit.
+            - name: php-state
+              mountPath: /var/lib/php/session
+              subPath: session
+            - name: php-state
+              mountPath: /var/lib/php/wsdlcache
+              subPath: wsdlcache
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        {{- include "mantis.configVolumes" . | nindent 8 }}
+        - name: plugins
+          {{- if $m.plugins.sizeLimit }}
+          emptyDir:
+            sizeLimit: {{ $m.plugins.sizeLimit }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: confd
+          configMap:
+            name: {{ include "mantis.fullname" . }}-confd
+            # <dir>.<file> -> <dir>/<file>
+            items:
+              {{- if eq (toString $m.httpd.statusAllow) "local" }}
+              - key: httpd.00-chart-status.conf
+                path: httpd/00-chart-status.conf
+              {{- end }}
+              {{- range $file, $_ := $m.confd.php }}
+              - key: php.{{ $file }}
+                path: php/{{ $file }}
+              {{- end }}
+              {{- range $file, $_ := $m.confd.phpFpm }}
+              - key: php-fpm.{{ $file }}
+                path: php-fpm/{{ $file }}
+              {{- end }}
+              {{- range $file, $_ := $m.confd.httpd }}
+              - key: httpd.{{ $file }}
+                path: httpd/{{ $file }}
+              {{- end }}
+        {{- if $m.hooks }}
+        - name: hooks
+          configMap:
+            name: {{ include "mantis.fullname" . }}-hooks
+        {{- end }}
+        {{- if $m.plugins.existingSecret }}
+        - name: plugins-list
+          secret:
+            secretName: {{ $m.plugins.existingSecret }}
+            items:
+              - key: {{ $m.plugins.existingSecretKey }}
+                path: list
+        {{- end }}
+        {{- if $m.oidc.enabled }}
+        - name: oidc-credentials
+          secret:
+            secretName: {{ include "mantis.oidc.secretName" . }}
+            items:
+              - key: {{ include "mantis.oidc.secretKey" . }}
+                path: client-secret
+        {{- end }}
+        {{- if and $m.httpd.https.enabled $m.httpd.https.existingSecret }}
+        - name: tls
+          secret:
+            secretName: {{ $m.httpd.https.existingSecret }}
+            # Group-readable: the pod runs with group 0 under an arbitrary UID.
+            defaultMode: 0440
+        {{- end }}
+        - name: attachments
+          {{- if $pa.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $pa.existingClaim | default (printf "%s-attachments" (include "mantis.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: php-state
+          emptyDir: {}
+        {{- if or $ci.existingConfigMap $ci.files }}
+        - name: custom-images
+          configMap:
+            name: {{ $ci.existingConfigMap | default (printf "%s-images" (include "mantis.fullname" .)) }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "mantis.selectorLabels" . | nindent 20 }}
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

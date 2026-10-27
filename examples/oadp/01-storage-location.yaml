@@ -1,0 +1,35 @@
+# In the MantisBT namespace: where its backups go. Use a bucket outside the
+# cluster's own storage (not a NooBaa/RGW bucket on the same ODF), or the
+# backups are lost together with it.
+#
+#   oc apply -n <namespace> -f 01-storage-location.yaml
+#   oc get nonadminbackupstoragelocation -n <namespace>   # wait for Available
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mantis-oadp-credentials
+type: Opaque
+stringData:
+  # AWS credentials file format, also used by other S3-compatible stores.
+  cloud: |
+    [default]
+    aws_access_key_id = CHANGE_ME
+    aws_secret_access_key = CHANGE_ME
+---
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminBackupStorageLocation
+metadata:
+  name: mantis
+spec:
+  backupStorageLocationSpec:
+    provider: aws
+    objectStorage:
+      bucket: mantis-backups
+      prefix: oadp
+    config:
+      region: us-east-1
+      s3Url: https://s3.example.com
+      s3ForcePathStyle: "true"
+    credential:
+      name: mantis-oadp-credentials
+      key: cloud

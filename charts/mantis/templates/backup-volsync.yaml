@@ -1,0 +1,36 @@
+{{- /*
+Backs up the attachments PVC with VolSync's restic mover. VolSync snapshots
+the volume on the schedule, mounts the snapshot in a mover pod, and pushes it
+to the restic repository described by backup.volsync.repository. Restores go
+through a ReplicationDestination; see the README.
+*/ -}}
+{{- $vs := .Values.backup.volsync }}
+{{- if $vs.enabled }}
+{{- $pa := .Values.persistence.attachments }}
+{{- $restic := dict
+  "repository" $vs.repository
+  "copyMethod" $vs.copyMethod
+  "pruneIntervalDays" (int $vs.pruneIntervalDays)
+  "retain" $vs.retain
+  "cacheCapacity" $vs.cacheCapacity
+}}
+{{- with $vs.volumeSnapshotClassName }}{{ $_ := set $restic "volumeSnapshotClassName" . }}{{ end }}
+{{- with $vs.storageClassName }}{{ $_ := set $restic "storageClassName" . }}{{ end }}
+{{- with $vs.accessModes }}{{ $_ := set $restic "accessModes" . }}{{ end }}
+{{- with $vs.cacheStorageClassName }}{{ $_ := set $restic "cacheStorageClassName" . }}{{ end }}
+{{- with $vs.moverSecurityContext }}{{ $_ := set $restic "moverSecurityContext" . }}{{ end }}
+{{- with $vs.moverResources }}{{ $_ := set $restic "moverResources" . }}{{ end }}
+apiVersion: volsync.backube/v1alpha1
+kind: ReplicationSource
+metadata:
+  name: {{ include "mantis.fullname" . }}-attachments
+  labels:
+    {{- include "mantis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  sourcePVC: {{ $pa.existingClaim | default (printf "%s-attachments" (include "mantis.fullname" .)) }}
+  trigger:
+    schedule: {{ $vs.schedule | quote }}
+  restic:
+    {{- mustMergeOverwrite $restic (deepCopy $vs.extraSpec) | toYaml | nindent 4 }}
+{{- end }}

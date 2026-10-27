@@ -1,0 +1,173 @@
+{{- /*
+A single database pod, for when high availability is not needed. MariaDB and
+PostgreSQL share this template: the sclorg images differ only in environment
+variable names, data path and health commands.
+*/ -}}
+{{- if eq .Values.database.mode "standalone" }}
+{{- $isMaria := eq .Values.database.type "mariadb" }}
+{{- $cfg := ternary .Values.mariadb.standalone .Values.postgresql.standalone $isMaria }}
+{{- $name := include "mantis.db.serverName" . }}
+{{- $secret := include "mantis.db.secretName" . }}
+{{- $keys := .Values.database.auth.secretKeys }}
+{{- $port := include "mantis.db.port" . | int }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "mantis.db.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "mantis.db.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: {{ .Values.database.type }}
+      port: {{ $port }}
+      targetPort: {{ .Values.database.type }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "mantis.db.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "mantis.db.selectorLabels" . | nindent 6 }}
+  # The PVC outlives the release. Deleting it is a deliberate act.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  template:
+    metadata:
+      labels:
+        {{- include "mantis.db.selectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Give the database time to flush and shut down cleanly.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: {{ .Values.database.type }}
+          image: {{ include "mantis.imageRef" $cfg.image }}
+          imagePullPolicy: {{ $cfg.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: {{ .Values.database.type }}
+              containerPort: {{ $port }}
+          env:
+            {{- if $isMaria }}
+            - name: MYSQL_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $keys.username }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $keys.password }}
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $keys.rootPassword }}
+            - name: MYSQL_CHARSET
+              value: utf8mb4
+            - name: MYSQL_COLLATION
+              value: utf8mb4_general_ci
+            {{- else }}
+            - name: POSTGRESQL_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $keys.username }}
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $keys.password }}
+            {{- end }}
+            {{- with $cfg.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if $isMaria }}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - MYSQL_PWD="$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u "$MYSQL_USER" -D "$MYSQL_DATABASE" -e 'SELECT 1'
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.database.type }}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          {{- else }}
+          readinessProbe:
+            exec:
+              command: ["/usr/libexec/check-container"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/usr/libexec/check-container", "--live"]
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 10
+          {{- end }}
+          {{- with $cfg.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ ternary "/var/lib/mysql/data" "/var/lib/pgsql/data" $isMaria }}
+      {{- with $cfg.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $cfg.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $cfg.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "mantis.db.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with $cfg.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $cfg.persistence.size }}
+{{- end }}
