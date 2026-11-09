@@ -26,6 +26,18 @@ connects to <name>-primary.
 {{- with $op.storage.storageClass }}{{ $_ := set $spec.storage "storageClassName" . }}{{ end }}
 {{- with $op.resources }}{{ $_ := set $spec "resources" . }}{{ end }}
 {{- with .Values.imagePullSecrets }}{{ $_ := set $spec "imagePullSecrets" . }}{{ end }}
+{{- $mx := .Values.metrics }}
+{{- if and $mx.enabled $mx.database.enabled }}
+{{- /* The operator deploys mysqld-exporter as <name>-metrics, creates the
+       monitoring user and its password Secret, and a ServiceMonitor. */}}
+{{- $exporter := dict }}
+{{- with $mx.database.mariadbExporterImage }}{{ $_ := set $exporter "image" . }}{{ end }}
+{{- with .Values.imagePullSecrets }}{{ $_ := set $exporter "imagePullSecrets" . }}{{ end }}
+{{- $sm := dict "enabled" true }}
+{{- with $mx.database.interval }}{{ $_ := set $sm "interval" . }}{{ end }}
+{{- with $mx.database.scrapeTimeout }}{{ $_ := set $sm "scrapeTimeout" . }}{{ end }}
+{{- $_ := set $spec "metrics" (dict "enabled" true "exporter" $exporter "serviceMonitor" $sm) }}
+{{- end }}
 apiVersion: k8s.mariadb.com/v1alpha1
 kind: MariaDB
 metadata:

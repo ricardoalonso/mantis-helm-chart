@@ -255,3 +255,34 @@ generated config, and the credentials config_inc.php reads at runtime.
   mountPath: /mantis/secrets/app
   readOnly: true
 {{- end }}
+
+{{/* ---------------------------------------------------------------- metrics */}}
+
+{{- define "mantis.metrics.apache" -}}
+{{- if and .Values.metrics.enabled .Values.metrics.apache.enabled }}true{{ end }}
+{{- end }}
+
+{{- define "mantis.metrics.phpFpm" -}}
+{{- if and .Values.metrics.enabled .Values.metrics.phpFpm.enabled }}true{{ end }}
+{{- end }}
+
+{{- define "mantis.metrics.selectorLabels" -}}
+{{ include "mantis.selectorLabels" . }}
+app.kubernetes.io/component: metrics
+{{- end }}
+
+{{/* NetworkPolicy `from` peers allowed to reach the metrics ports. */}}
+{{- define "mantis.metrics.from" -}}
+{{- $default := list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "openshift-user-workload-monitoring"))) }}
+{{- toYaml (.Values.metrics.networkPolicyFrom | default $default) }}
+{{- end }}
+
+{{/* The scrape settings a ServiceMonitor endpoint or PodMonitor endpoint takes. */}}
+{{- define "mantis.metrics.scrape" -}}
+{{- $s := dict "path" "/metrics" }}
+{{- with .interval }}{{ $_ := set $s "interval" . }}{{ end }}
+{{- with .scrapeTimeout }}{{ $_ := set $s "scrapeTimeout" . }}{{ end }}
+{{- with .relabelings }}{{ $_ := set $s "relabelings" . }}{{ end }}
+{{- with .metricRelabelings }}{{ $_ := set $s "metricRelabelings" . }}{{ end }}
+{{- toYaml $s }}
+{{- end }}

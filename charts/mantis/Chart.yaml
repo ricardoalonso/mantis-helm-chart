@@ -6,7 +6,7 @@ description: >-
   managed by mariadb-operator (Galera) or CloudNativePG.
 type: application
 # Chart version. Bump on every change to the chart.
-version: 0.2.0
+version: 0.3.0
 # MantisBT version; also the default image tag.
 appVersion: "2.28.4"
 kubeVersion: ">=1.25.0-0"
@@ -25,6 +25,7 @@ keywords:
   - postgresql
   - cloudnative-pg
   - openid-connect
+  - prometheus
 maintainers:
   - name: Ricardo Alonso
     email: ricardoalonsos@gmail.com

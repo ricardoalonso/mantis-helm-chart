@@ -168,3 +168,28 @@ something that installs and then does not work.
 {{- if and .Values.route.enabled .Values.ingress.enabled }}
 {{- fail "enable either route or ingress, not both" }}
 {{- end }}
+
+{{- $mx := .Values.metrics }}
+{{- if $mx.enabled }}
+{{- if and $mx.apache.enabled (eq (toString $m.httpd.statusAllow) "none") }}
+{{- fail "metrics.apache.enabled reads /server-status, which mantis.httpd.statusAllow=none closes; use local (the exporter connects over localhost), or set metrics.apache.enabled=false" }}
+{{- end }}
+{{- if and $mx.phpFpm.enabled (hasKey ($m.phpFpm.pool | default dict) "pm.status_listen") }}
+{{- fail "metrics.phpFpm.enabled sets pm.status_listen itself (127.0.0.1:metrics.phpFpm.statusPort); remove it from mantis.phpFpm.pool" }}
+{{- end }}
+{{- $ports := list (int $mx.apache.port) (int $mx.phpFpm.port) (int $mx.phpFpm.statusPort) 8080 8443 }}
+{{- if ne (len $ports) (len (uniq $ports)) }}
+{{- fail (printf "metrics.apache.port (%v), metrics.phpFpm.port (%v) and metrics.phpFpm.statusPort (%v) must differ from each other and from 8080 and 8443, which Apache uses" $mx.apache.port $mx.phpFpm.port $mx.phpFpm.statusPort) }}
+{{- end }}
+{{- if $mx.database.enabled }}
+{{- if ne $db.mode "operator" }}
+{{- fail (printf "metrics.database.enabled is only available with database.mode=operator, not %s; set it to false" $db.mode) }}
+{{- end }}
+{{- end }}
+{{- $needCrd := or (and (or $mx.apache.enabled $mx.phpFpm.enabled) $mx.serviceMonitor.enabled) $mx.database.enabled }}
+{{- if and $needCrd (not $mx.serviceMonitor.skipCrdCheck) }}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+{{- fail "metrics needs the Prometheus Operator's ServiceMonitor and PodMonitor (monitoring.coreos.com/v1), which are not installed in this cluster. Set metrics.serviceMonitor.enabled=false and metrics.database.enabled=false to only run the exporters. With `helm template`, pass --api-versions monitoring.coreos.com/v1/ServiceMonitor or set metrics.serviceMonitor.skipCrdCheck=true." }}
+{{- end }}
+{{- end }}
+{{- end }}

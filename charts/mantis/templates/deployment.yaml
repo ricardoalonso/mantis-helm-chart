@@ -136,6 +136,10 @@ spec:
                   (list "PHP_FPM_PROCESS_IDLE_TIMEOUT" $m.phpFpm.processIdleTimeout)
                   (list "PHP_FPM_MAX_REQUESTS" $m.phpFpm.maxRequests)
                   (list "PHP_FPM_REQUEST_TERMINATE_TIMEOUT" $m.phpFpm.requestTerminateTimeout) }}
+            {{- if include "mantis.metrics.phpFpm" . }}
+            {{- /* For php-fpm-exporter. Loopback only: not reachable from outside the pod. */}}
+            {{- $fpm = append $fpm (list "PHP_FPM_POOL_pm__status_listen" (printf "127.0.0.1:%d" (int .Values.metrics.phpFpm.statusPort))) }}
+            {{- end }}
             {{- range $k, $v := $m.phpFpm.pool }}
             {{- $fpm = append $fpm (list (printf "PHP_FPM_POOL_%s" (include "mantis.envKey" $k)) $v) }}
             {{- end }}
@@ -227,6 +231,64 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- $mx := .Values.metrics }}
+        {{- $mxSecurityContext := mergeOverwrite (deepCopy (.Values.securityContext | default dict)) (deepCopy ($mx.securityContext | default dict)) }}
+        {{- if include "mantis.metrics.apache" . }}
+        # Translates Apache's /server-status into Prometheus metrics. Over the
+        # loopback, so mantis.httpd.statusAllow=local lets it in.
+        - name: apache-exporter
+          image: {{ include "mantis.imageRef" $mx.apache.image }}
+          imagePullPolicy: {{ $mx.apache.image.pullPolicy }}
+          {{- with $mxSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            - --scrape_uri=http://127.0.0.1:8080/server-status?auto
+            - --web.listen-address=:{{ $mx.apache.port }}
+            {{- with $mx.apache.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: apache-metrics
+              containerPort: {{ $mx.apache.port }}
+              protocol: TCP
+          {{- with $mx.apache.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- if include "mantis.metrics.phpFpm" . }}
+        # Translates PHP-FPM's status into Prometheus metrics, over FastCGI
+        # to the status-only listener (pm.status_listen) set above.
+        - name: php-fpm-exporter
+          image: {{ include "mantis.imageRef" $mx.phpFpm.image }}
+          imagePullPolicy: {{ $mx.phpFpm.image.pullPolicy }}
+          {{- with $mxSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: PHP_FPM_SCRAPE_URI
+              value: tcp://127.0.0.1:{{ $mx.phpFpm.statusPort }}/php-status
+            - name: PHP_FPM_WEB_LISTEN_ADDRESS
+              value: ":{{ $mx.phpFpm.port }}"
+            # PHP-FPM's own active/idle counts are known to drift; count the
+            # processes from the per-process list instead.
+            - name: PHP_FPM_FIX_PROCESS_COUNT
+              value: "true"
+            {{- with $mx.phpFpm.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: fpm-metrics
+              containerPort: {{ $mx.phpFpm.port }}
+              protocol: TCP
+          {{- with $mx.phpFpm.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
       volumes:
         {{- include "mantis.configVolumes" . | nindent 8 }}
         - name: plugins

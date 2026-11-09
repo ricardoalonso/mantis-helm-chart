@@ -26,6 +26,20 @@ spec:
         - port: https
           protocol: TCP
         {{- end }}
+    {{- if or (include "mantis.metrics.apache" .) (include "mantis.metrics.phpFpm" .) }}
+    # The exporters, from the metrics scraper only.
+    - from:
+        {{- include "mantis.metrics.from" . | nindent 8 }}
+      ports:
+        {{- if include "mantis.metrics.apache" . }}
+        - port: apache-metrics
+          protocol: TCP
+        {{- end }}
+        {{- if include "mantis.metrics.phpFpm" . }}
+        - port: fpm-metrics
+          protocol: TCP
+        {{- end }}
+    {{- end }}
 {{- if ne .Values.database.mode "external" }}
 {{- $np := .Values.networkPolicy.database }}
 {{- $operator := eq .Values.database.mode "operator" }}
@@ -68,5 +82,13 @@ spec:
         {{- with $np.extraFrom }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+    {{- if and $operator $pg .Values.metrics.enabled .Values.metrics.database.enabled }}
+    # CloudNativePG's metrics, from the metrics scraper only.
+    - from:
+        {{- include "mantis.metrics.from" . | nindent 8 }}
+      ports:
+        - port: 9187
+          protocol: TCP
+    {{- end }}
 {{- end }}
 {{- end }}

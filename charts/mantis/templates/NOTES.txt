@@ -64,3 +64,17 @@ an emptyDir and are lost whenever a pod is replaced.
 
 Email notifications are off. Set mantis.email.* to enable them.
 {{- end }}
+{{- if .Values.metrics.enabled }}
+
+Metrics: Apache and PHP-FPM exporters on Service {{ include "mantis.fullname" . }}-metrics
+{{- if .Values.metrics.serviceMonitor.enabled }}, scraped through
+ServiceMonitor {{ include "mantis.fullname" . }}
+{{- end }}.
+{{- if .Values.metrics.database.enabled }}
+{{- if eq .Values.database.type "mariadb" }}
+Database: mysqld-exporter deployed by mariadb-operator ({{ include "mantis.db.serverName" . }}-metrics).
+{{- else }}
+Database: PodMonitor {{ include "mantis.db.serverName" . }} for the CloudNativePG instances.
+{{- end }}
+{{- end }}
+{{- end }}

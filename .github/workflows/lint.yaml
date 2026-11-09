@@ -72,3 +72,15 @@ jobs:
               echo "ok $t/$m"
             done
           done
+      - name: render the metrics
+        run: |
+          for t in mariadb postgresql; do
+            helm template t charts/mantis \
+              --api-versions monitoring.coreos.com/v1/ServiceMonitor \
+              --set database.type=$t,database.mode=operator,database.skipOperatorCheck=true \
+              --set metrics.enabled=true,metrics.database.enabled=true \
+              --set networkPolicy.enabled=true > /dev/null
+            echo "ok $t/operator"
+          done
+          helm template t charts/mantis --set metrics.enabled=true,metrics.serviceMonitor.enabled=false > /dev/null
+          echo "ok exporters only"

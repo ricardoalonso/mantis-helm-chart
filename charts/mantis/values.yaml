@@ -648,6 +648,111 @@ networkPolicy:
     extraFrom: []
 
 # -----------------------------------------------------------------------------
+# Metrics
+# -----------------------------------------------------------------------------
+# Prometheus metrics. Apache's /server-status and PHP-FPM's status page are not
+# in Prometheus format, so each is read by an exporter sidecar in the
+# application pod, over localhost; mantis.httpd.statusAllow can stay "local".
+# The exporters are served by a Service of their own, <fullname>-metrics, not
+# by the Service the Route and Ingress use. On OpenShift, scraping needs
+# monitoring for user-defined projects (enableUserWorkload in the
+# cluster-monitoring-config ConfigMap).
+metrics:
+  enabled: false
+
+  # apache_exporter (https://github.com/Lusitaniae/apache_exporter), reading
+  # http://localhost:8080/server-status?auto.
+  apache:
+    enabled: true
+    image:
+      repository: quay.io/lusitaniae/apache-exporter
+      tag: v1.1.1
+      digest: ""
+      pullPolicy: IfNotPresent
+    port: 9117
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
+    # e.g. [--log.level=debug]
+    extraArgs: []
+
+  # php-fpm_exporter (https://github.com/hipages/php-fpm_exporter). PHP-FPM
+  # answers it on a status-only listener (pm.status_listen) bound to
+  # 127.0.0.1:statusPort, so a pool busy with slow requests still reports, and
+  # the exporter never takes a worker. Leave pm.status_listen out of
+  # mantis.phpFpm.pool.
+  phpFpm:
+    enabled: true
+    image:
+      # A mirror of docker.io/hipages/php-fpm_exporter, away from Docker Hub's
+      # pull rate limits.
+      repository: quay.io/ricardoalonsos/php-fpm_exporter
+      tag: 2.2.0
+      digest: ""
+      pullPolicy: IfNotPresent
+    port: 9253
+    statusPort: 9001
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
+    # e.g. [{name: PHP_FPM_LOG_LEVEL, value: debug}]
+    extraEnv: []
+
+  # Applied over `securityContext` (below) for the exporter containers. On
+  # OpenShift nothing is needed. Elsewhere, runAsNonRoot needs a numeric
+  # user and neither image declares one, e.g.
+  #   runAsUser: 65534
+  securityContext: {}
+
+  # A Prometheus Operator ServiceMonitor for the exporters. Needs the
+  # monitoring.coreos.com CRDs (present on OpenShift).
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: ""
+    # Extra labels, for a Prometheus that selects ServiceMonitors by label.
+    labels: {}
+    relabelings: []
+    metricRelabelings: []
+    # The CRD is checked at render time. `helm template` has no cluster to
+    # check against; pass --api-versions monitoring.coreos.com/v1/ServiceMonitor,
+    # or set this to true.
+    skipCrdCheck: false
+
+  # Database metrics, for the operator modes:
+  #   mariadb    -> mariadb-operator deploys mysqld-exporter and its own
+  #                 ServiceMonitor, with a monitoring user it creates
+  #   postgresql -> CloudNativePG serves metrics on every instance (port
+  #                 9187); the chart adds a PodMonitor
+  # Not available for the standalone and external modes.
+  database:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: ""
+    # mariadb only. The operator's default is the same image on Docker Hub.
+    mariadbExporterImage: quay.io/prometheus/mysqld-exporter:v0.15.1
+    # postgresql only.
+    podMonitor:
+      labels: {}
+      relabelings: []
+      metricRelabelings: []
+
+  # With networkPolicy.enabled, the sources allowed to reach the metrics
+  # ports (the exporters, and the CloudNativePG instances), as NetworkPolicy
+  # `from` peers. Empty means OpenShift's monitoring for user-defined
+  # projects:
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: openshift-user-workload-monitoring
+  networkPolicyFrom: []
+
+# -----------------------------------------------------------------------------
 # Pods
 # -----------------------------------------------------------------------------
 serviceAccount:

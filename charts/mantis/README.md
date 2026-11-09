@@ -361,6 +361,8 @@ configuration check. A failing hook stops the pod.
 | `postgresql.operator.instances` | `3` | |
 | `mariadb.operator.extraSpec` / `postgresql.operator.extraSpec` | `{}` | merged into the CR spec: backups, monitoring, TLS |
 | `backup.volsync.enabled` | `false` | VolSync backups of the attachments; see [Backup](#backup) |
+| `metrics.enabled` | `false` | Prometheus metrics for Apache and PHP-FPM; see [Metrics](#metrics) |
+| `metrics.database.enabled` | `false` | database metrics, operator modes only |
 | `route.enabled` / `ingress.enabled` | `true` / `false` | |
 | `certManager.enabled` | `false` | certificate for the host, issued and renewed by cert-manager |
 | `networkPolicy.enabled` | `false` | application open on http only; database only from its namespace and the operator |
@@ -467,6 +469,61 @@ To restore the whole volume, see [examples/volsync/restore.yaml](../../examples/
 It's a restic repository, so single files can also be restored with the
 restic CLI.
 
+## Metrics
+
+The image serves Apache's `/server-status` and PHP-FPM's status page, but
+not in Prometheus format. With `metrics.enabled`, the chart adds two exporter
+sidecars to each application pod, and a `ServiceMonitor` for them:
+
+| Container | Reads | Port | Metrics |
+|---|---|---|---|
+| `apache-exporter` ([apache_exporter](https://github.com/Lusitaniae/apache_exporter)) | `http://127.0.0.1:8080/server-status?auto` | 9117 | `apache_*`: workers, requests, bytes, scoreboard |
+| `php-fpm-exporter` ([php-fpm_exporter](https://github.com/hipages/php-fpm_exporter)) | FastCGI on `127.0.0.1:9001` | 9253 | `phpfpm_*`: active/idle processes, listen queue, `max_children_reached` |
+
+Both connect over the pod's loopback, so `mantis.httpd.statusAllow` stays at
+`local` and the status pages stay closed to everything outside the pod.
+PHP-FPM answers on a status-only listener (`pm.status_listen`), so it still
+reports when every worker is busy, which is exactly when
+`phpfpm_max_children_reached` and `phpfpm_listen_queue` matter. The exporters
+are served by their own Service, `<release>-metrics`, not by the one the Route
+uses.
+
+```yaml
+metrics:
+  enabled: true
+  database:
+    enabled: true   # operator modes only
+```
+
+On an existing release, upgrade with `--reset-then-reuse-values` (Helm 3.14+)
+rather than `--reuse-values`: the latter replays the old release's values
+without the chart's new defaults, and fails on `metrics.apache.enabled`.
+
+With `metrics.database.enabled`:
+
+- **mariadb-operator:** the chart sets `spec.metrics` on the `MariaDB`. The
+  operator creates a monitoring user, deploys `mysqld-exporter` as
+  `<release>-mariadb-metrics` and adds a `ServiceMonitor` that probes every
+  Galera node (`mysql_global_status_wsrep_*` included). Turning it on does not
+  restart the database pods. Turning it off later leaves the exporter and its
+  `ServiceMonitor` in place, and the operator keeps the generated
+  `<release>-mariadb-metrics-password` Secret even after the `MariaDB` is
+  deleted.
+- **CloudNativePG:** every instance already serves metrics on port 9187; the
+  chart adds a `PodMonitor` for them (CloudNativePG's own `enablePodMonitor`
+  is deprecated).
+
+The standalone and external modes have no database metrics.
+
+On OpenShift, scraping needs monitoring for user-defined projects
+(`enableUserWorkload: true` in the `cluster-monitoring-config` ConfigMap); the
+metrics then show under Observe > Metrics in the project. With
+`networkPolicy.enabled`, the metrics ports accept connections only from
+`openshift-user-workload-monitoring`; change that with
+`metrics.networkPolicyFrom`. Without the Prometheus Operator, set
+`metrics.serviceMonitor.enabled=false` and scrape the `<release>-metrics`
+Service some other way.
+
 ## Uninstalling
 
 `helm uninstall` deliberately **leaves the data behind**:
@@ -487,6 +544,7 @@ oc delete cluster.postgresql.cnpg.io/mantis-postgresql
 # MariaDB via mariadb-operator (its PVCs stay, labelled with the resource name):
 oc delete mariadb/mantis-mariadb
 oc delete pvc -l app.kubernetes.io/instance=mantis-mariadb
+oc delete secret mantis-mariadb-metrics-password --ignore-not-found
 # Attachments and the standalone database:
 oc delete pvc -l app.kubernetes.io/instance=mantis
 oc delete secret mantis-db mantis-app
